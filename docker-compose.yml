@@ -1,0 +1,41 @@
+# ClubOS 总平台后端 · 本地/自托管一键起（Postgres + API）
+# 用法：
+#   cp .env.example .env   # 填好 DATABASE_URL / PLATFORM_LLM_KEY / JWT_SECRET / KEY_VAULT_SECRET / ADMIN_CODE
+#   docker compose up -d --build
+# 说明：compose 内 DATABASE_URL 指向服务名 db；.env 里的 DATABASE_URL 仅给本地直跑用，二者可不同。
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: clubos
+      POSTGRES_PASSWORD: clubos
+      POSTGRES_DB: clubos
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clubos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  api:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://clubos:clubos@db:5432/clubos?schema=public
+      PORT: "3000"
+      # 以下为占位，生产请改成随机强值（或注入真实 .env 值）
+      JWT_SECRET: change-me-please-set-random
+      ADMIN_CODE: clubos-admin
+      KEY_VAULT_SECRET: change-me-32bytes-key-vault-sec
+      PLATFORM_LLM_KEY: ""
+    restart: unless-stopped
+
+volumes:
+  pgdata:

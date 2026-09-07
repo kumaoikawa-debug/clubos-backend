@@ -1,0 +1,366 @@
+// ClubOS 支付分账 —— 数据模型
+// 对应文档：clubos-payments-spec.md 一、数据表设计
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// 俱乐部 / 商户
+model Merchant {
+  id             BigInt   @id @default(autoincrement())
+  name           String
+  wechatSubMchId String?  @unique @map("wechat_sub_mch_id")
+  /// free | member
+  plan           String   @default("free")
+  /// 0~1，会员版置 0
+  commissionRate Decimal  @default(0.0500) @map("commission_rate") @db.Decimal(5, 4)
+  contactPhone   String?  @map("contact_phone")
+  contactEmail   String?  @map("contact_email")
+  /// active | suspended
+  status         String   @default("active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  activities   Activity[]
+  orders       Order[]
+  payouts      Payout[]
+  subscriptions Subscription[]
+  points       PointLedger[]
+  apiKeys      ApiKeyVault[]
+  mallOrders   MallOrder[]
+  commissionLedgers MallCommissionLedger[]
+  aiCredit     AiCreditAccount?
+  aiCreditLedger AiCreditLedger[]
+
+  @@index([plan, status])
+  @@map("merchants")
+}
+
+/// 会员订阅
+model Subscription {
+  id         BigInt   @id @default(autoincrement())
+  merchantId BigInt   @map("merchant_id")
+  /// member
+  plan       String   @default("member")
+  /// monthly | yearly
+  cycle      String   @default("monthly")
+  /// active | expired | canceled
+  status     String   @default("active")
+  amount     Decimal  @db.Decimal(10, 2)
+  startedAt  DateTime @default(now()) @map("started_at")
+  expiresAt  DateTime @map("expires_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  @@index([merchantId, status])
+  @@map("subscriptions")
+}
+
+/// 会员积分流水（余额 = change 累加快照）
+model PointLedger {
+  id         BigInt   @id @default(autoincrement())
+  merchantId BigInt   @map("merchant_id")
+  /// 正负变更
+  change     Int
+  /// 变更后余额快照
+  balance    Int
+  reason     String
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  @@index([merchantId])
+  @@map("point_ledger")
+}
+
+/// 密钥保管（免费版自备 LLM Key / 平台 Key 加密存储）
+model ApiKeyVault {
+  id         BigInt   @id @default(autoincrement())
+  merchantId BigInt   @map("merchant_id")
+  /// deepseek | openai ...
+  channel    String
+  /// AES-256-GCM 加密后的密钥
+  secretEnc  String   @map("secret_enc")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  @@unique([merchantId, channel])
+  @@map("api_key_vault")
+}
+
+/// 活动
+model Activity {
+  id         BigInt    @id @default(autoincrement())
+  merchantId BigInt    @map("merchant_id")
+  title      String
+  price      Decimal   @db.Decimal(10, 2)
+  limitCount Int       @map("limit_count")
+  /// draft | published | ended
+  status     String    @default("draft")
+  startsAt   DateTime? @map("starts_at")
+  endsAt     DateTime? @map("ends_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+  orders   Order[]
+
+  @@index([merchantId, status])
+  @@map("activities")
+}
+
+/// 报名订单 ★核心
+model Order {
+  id         BigInt    @id @default(autoincrement())
+  orderNo    String    @unique @map("order_no")
+  activityId BigInt    @map("activity_id")
+  merchantId BigInt    @map("merchant_id")
+  openid     String?
+
+  buyerName String @map("buyer_name")
+  phone     String
+  /// idcard | passport | other
+  idType    String @map("id_type")
+  /// 证件号（生产环境应加密存储）
+  idNumber  String @map("id_number")
+  adults    Int    @default(1)
+  children  Int    @default(0)
+
+  amount Decimal @db.Decimal(10, 2)
+  /// pending | paid | refunded | closed
+  status String @default("pending")
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  paidAt    DateTime? @map("paid_at")
+  closedAt  DateTime? @map("closed_at")
+
+  activity Activity      @relation(fields: [activityId], references: [id])
+  merchant Merchant      @relation(fields: [merchantId], references: [id])
+  payments Payment[]
+  splits   SplitLedger[]
+
+  @@index([activityId, status])
+  @@index([merchantId, paidAt])
+  @@map("orders")
+}
+
+/// 支付流水
+model Payment {
+  id            BigInt    @id @default(autoincrement())
+  orderId       BigInt    @map("order_id")
+  /// 微信 transaction_id —— 回调幂等键
+  transactionId String?   @unique @map("transaction_id")
+  amount        Decimal   @db.Decimal(10, 2)
+  channel       String    @default("wechat")
+  paidAt        DateTime? @map("paid_at")
+  rawCallback   Json?     @map("raw_callback")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@map("payments")
+}
+
+/// 分账台账 ★核心
+model SplitLedger {
+  id             BigInt    @id @default(autoincrement())
+  orderId        BigInt    @map("order_id")
+  amountTotal    Decimal   @map("amount_total") @db.Decimal(10, 2)
+  /// 入俱乐部
+  merchantAmount Decimal   @map("merchant_amount") @db.Decimal(10, 2)
+  /// 平台抽成
+  platformFee    Decimal   @map("platform_fee") @db.Decimal(10, 2)
+  rate           Decimal   @db.Decimal(5, 4)
+  /// pending | success | failed
+  status         String    @default("pending")
+  failReason     String?   @map("fail_reason")
+  splitAt        DateTime? @map("split_at")
+  retryCount     Int       @default(0) @map("retry_count")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  order Order @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([status, splitAt])
+  @@map("split_ledger")
+}
+
+/// 结算提现
+model Payout {
+  id         BigInt    @id @default(autoincrement())
+  merchantId BigInt    @map("merchant_id")
+  amount     Decimal   @db.Decimal(10, 2)
+  period     DateTime  @db.Date
+  /// pending | settled
+  status     String    @default("pending")
+  settledAt  DateTime? @map("settled_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id])
+
+  /// 一个商户一天只生成一条结算记录（upsert 依赖此唯一约束）
+  @@unique([merchantId, period])
+  @@map("payouts")
+}
+
+/// ================= V2.0 装备商城（平台统一运营）=================
+
+/// 供应商（平台统一招商与结算）
+model MallSupplier {
+  id             BigInt   @id @default(autoincrement())
+  name           String
+  companyName    String?  @map("company_name")
+  contactName    String?  @map("contact_name")
+  contactPhone   String?  @map("contact_phone")
+  /// brand | retail | fulfillment
+  type           String   @default("brand")
+  /// active | suspended
+  status         String   @default("active")
+  /// monthly | settled
+  settlementMode String   @map("settlement_mode") @default("monthly")
+  settlementCycle String? @map("settlement_cycle")
+  invoiceType    String?  @map("invoice_type")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  products MallProduct[]
+
+  @@map("mall_suppliers")
+}
+
+/// 商城商品（平台统一上架 / 定价 / 发货 / 售后；俱乐部只读 + 可经营「我的推荐」货架）
+model MallProduct {
+  id              BigInt   @id @default(autoincrement())
+  supplierId      BigInt   @map("supplier_id")
+  title           String
+  subtitle        String?
+  cover           String?
+  category        String
+  /// L1 普通商品 | L2 一般户外装备 | L3 安全关键装备
+  riskLevel       String   @default("L1") @map("risk_level")
+  /// cloud_warehouse | supplier_direct
+  fulfillmentMode String   @map("fulfillment_mode") @default("cloud_warehouse")
+  /// percentage | fixed
+  commissionMode  String   @map("commission_mode") @default("percentage")
+  commissionValue Decimal  @map("commission_value") @db.Decimal(10, 2)
+  retailPrice     Decimal  @map("retail_price") @db.Decimal(10, 2)
+  supplyPrice     Decimal  @map("supply_price") @db.Decimal(10, 2)
+  stock           Int      @default(0)
+  tags            String[]
+  rating          Decimal  @default(0)
+
+  supplier   MallSupplier    @relation(fields: [supplierId], references: [id])
+  orderItems MallOrderItem[]
+
+  @@index([supplierId])
+  @@map("mall_products")
+}
+
+/// 商城订单（按 clubId 单级归因到推荐俱乐部；非多级分销）
+model MallOrder {
+  id             BigInt   @id @default(autoincrement())
+  orderNo        String   @unique @map("order_no")
+  clubId         BigInt   @map("club_id")
+  userId         String?  @map("user_id")
+  /// club_shop | ai_gear_list | activity | referrer | direct
+  sourceType     String   @map("source_type") @default("club_shop")
+  sourceId       String?  @map("source_id")
+  referrerClubId BigInt?  @map("referrer_club_id")
+  amount         Decimal  @db.Decimal(10, 2)
+  /// paid | refunded | closed
+  status         String   @default("paid")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  club   Merchant        @relation(fields: [clubId], references: [id])
+  items  MallOrderItem[]
+  ledger MallCommissionLedger?
+
+  @@index([clubId, createdAt])
+  @@map("mall_orders")
+}
+
+model MallOrderItem {
+  id        BigInt   @id @default(autoincrement())
+  orderId   BigInt   @map("order_id")
+  productId BigInt   @map("product_id")
+  title     String
+  price     Decimal  @db.Decimal(10, 2)
+  qty       Int      @default(1)
+
+  order   MallOrder   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product MallProduct @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@map("mall_order_items")
+}
+
+/// 佣金台账（状态机 pending → frozen → available → settled / reversed）
+/// 与报名分账 SplitLedger 解耦：商城佣金是俱乐部单级归因佣金，由平台统一结算。
+model MallCommissionLedger {
+  id         BigInt   @id @default(autoincrement())
+  orderId    BigInt   @map("order_id") @unique
+  clubId     BigInt   @map("club_id")
+  amount     Decimal  @db.Decimal(10, 2)
+  /// pending 待确认 | frozen 冻结(售后期) | available 可结算 | settled 已结算 | reversed 已冲销
+  status     String   @default("pending")
+  /// 平台批量确认时的阶梯档位快照 L1~L4（按 clubId 累计 GMV 自动判定）
+  tier       String   @default("L1")
+  settledAt  DateTime? @map("settled_at")
+  reversedAt DateTime? @map("reversed_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  order MallOrder @relation(fields: [orderId], references: [id])
+  club  Merchant  @relation(fields: [clubId], references: [id])
+
+  @@index([clubId, status])
+  @@index([status, createdAt])
+  @@map("mall_commission_ledger")
+}
+
+/// AI 额度账户（V2.0）：对外只称「AI 积分」，内部按 token 折算。
+/// 消耗顺序 base → gift → paid：base/gift 按月清零，paid（充值）永不清零。
+model AiCreditAccount {
+  id         BigInt   @id @default(autoincrement())
+  clubId     BigInt   @unique @map("club_id")
+  /// 每月基础额度（AI 积分）
+  base       Int      @default(1000)
+  /// 商城销量里程碑赠送（月清）
+  gift       Int      @default(0)
+  /// 充值余额（不清零）
+  paid       Int      @default(0)
+  /// 额度归属月份 YYYY-MM，用于判断是否需要月初刷新
+  month      String
+  /// 已发放里程碑快照 JSON，避免同一里程碑重复发放
+  milestones String   @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  club Merchant @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@map("ai_credit_accounts")
+}
+
+/// AI 额度流水：consume 消耗 | recharge 充值 | grant 里程碑赠送 | refresh 每月刷新
+model AiCreditLedger {
+  id        BigInt   @id @default(autoincrement())
+  clubId    BigInt   @map("club_id")
+  type      String
+  delta     Int
+  /// 变动后余额快照（AI 积分）
+  balance   Int
+  note      String   @default("")
+  /// 本次消耗对应的真实 token 数（可选，用于成本核算）
+  tokens    Int?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  club Merchant @relation(fields: [clubId], references: [id], onDelete: Cascade)
+
+  @@index([clubId, createdAt])
+  @@map("ai_credit_ledger")
+}

@@ -1,0 +1,30 @@
+# ClubOS 总平台后端 · Render Blueprint（docker 运行时，自带 Postgres 插件）
+# 用法：Render 控制台 → New → Blueprint → 选本仓库 → 识别此文件自动建库+服务。
+# sync: false 的变量需在 Render 后台手动填（尤其是 PLATFORM_LLM_KEY / JWT_SECRET / KEY_VAULT_SECRET）。
+databases:
+  - name: clubos-db
+    databaseName: clubos
+    user: clubos
+    plan: free
+
+services:
+  - type: web
+    name: clubos-backend
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: clubos-db
+          property: connectionString
+      - key: PORT
+        value: 3000
+      - key: JWT_SECRET
+        sync: false
+      - key: ADMIN_CODE
+        sync: false
+      - key: KEY_VAULT_SECRET
+        sync: false
+      - key: PLATFORM_LLM_KEY
+        sync: false
