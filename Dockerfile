@@ -16,6 +16,6 @@ RUN npm run build
 
 EXPOSE 3000
 
-# 首次启动按 DATABASE_URL 建表（db push），随后启动服务
+# 首次启动按 DATABASE_URL 建表（db push）→ 保证默认俱乐部 id=1 存在（seed）→ 启动服务
 # 注意：DATABASE_URL / PLATFORM_LLM_KEY / JWT_SECRET / KEY_VAULT_SECRET / ADMIN_CODE 须通过环境变量注入
-CMD ["sh", "-c", "npx prisma db push --skip-generate && node dist/index.js"]
+CMD ["sh", "-c", "npx prisma db push --skip-generate && npm run seed && node dist/index.js"]
