@@ -195,3 +195,4 @@ curl http://localhost:3000/health   # 期望 {"status":"ok",...}
 
 > ⚠️ 无论哪种方式，`/api/pay/membership/ai-proxy` 需要 `ADMIN_CODE` 换 JWT，且 `PLATFORM_LLM_KEY` 必须有值，否则「测试后端连接」会返回未鉴权 / 代理失败。
 > ⚠️ `KEY_VAULT_SECRET` 必须**正好 32 字节**，否则 vault 加解密会报错。
+> ⚠️ 首次启动已由 `prisma/seed.ts` **幂等创建默认俱乐部 `id=1`（free/active）**，故前端「商家ID」直接填 `1` 即可登录并调 `/ai-proxy`；如需多商家自行往 `merchants` 表插记录（status 须 `active`）。

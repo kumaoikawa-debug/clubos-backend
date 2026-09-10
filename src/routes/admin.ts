@@ -17,7 +17,10 @@ const loginSchema = z.object({
  * demo 用统一口令 ADMIN_CODE；生产应替换为 OAuth / 密码哈希。
  */
 router.post('/login', async (req, res) => {
-  const parsed = loginSchema.safeParse(req.body);
+  // 兼容前端两种字段名：规范为 code，旧版曾发 adminCode（v139 前端已统一为 code）
+  const body = { ...req.body };
+  if (!body.code && body.adminCode) body.code = body.adminCode;
+  const parsed = loginSchema.safeParse(body);
   if (!parsed.success) {
     res.status(400).json(fail(`参数校验失败：${zodMessage(parsed.error)}`));
     return;
