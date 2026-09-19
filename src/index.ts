@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import routes from './routes';
+import contentRouter from './routes/content';
 import { config } from './config';
 import { prisma, logger, fail } from './lib';
 import { startScheduler } from './scheduler';
@@ -25,6 +26,9 @@ app.get('/health', (_req, res) => {
 
 // 业务路由统一挂在 /api/pay 下
 app.use('/api/pay', routes);
+
+// Content Engine V3：活动详情页 / 宣发 / 回顾的内容生成（自带 requireAdmin 鉴权）
+app.use('/api/content', contentRouter);
 
 // 404
 app.use((_req, res) => {

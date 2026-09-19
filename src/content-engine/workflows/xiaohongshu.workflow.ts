@@ -1,0 +1,84 @@
+/**
+ * Content Engine V3 —— 小红书 workflow
+ * 文档 §十五：「不要从公众号缩短。」
+ *
+ * 同一份 Activity Intelligence 交给 Xiaohongshu Channel Director，
+ * 产出 hook / titleOptions / mainAngle / body / imageSequence / coverSuggestion / tags / cta。
+ * ★ 图片顺序是内容的一部分：必须决定第一张是什么、第二张承担什么、
+ *   人物/风景比例、是否需要信息图。
+ */
+
+import type { XiaohongshuDocument } from '../contracts/channels';
+import { buildCreativeFingerprint } from '../contracts/fingerprints';
+import { evaluateSimilarity } from '../steps/quality';
+import { writeXiaohongshu, sequenceXhsPhotos } from '../steps/channels';
+import { saveContentDocument, appendCreativeMemory } from '../storage/repo';
+import { runCommonPrefix, type CommonInput } from './shared';
+
+export const WORKFLOW_VERSION = 'v3.0-xiaohongshu';
+
+export interface XhsResult {
+  document: XiaohongshuDocument;
+  missing: string[];
+}
+
+export async function runXiaohongshuPipeline(input: CommonInput): Promise<XhsResult> {
+  const common = await runCommonPrefix(input, 'xiaohongshu');
+
+  const written = await writeXiaohongshu(input.merchantId, common.truth, common.direction);
+  const { sequence, coverSuggestion } = sequenceXhsPhotos(
+    common.photos,
+    common.vision,
+    written.mainAngle
+  );
+
+  const fingerprint = buildCreativeFingerprint({
+    thesisText: common.direction.thesis,
+    openingMode: written.hook,
+    blocks: [],
+    styleVector: common.direction.styleVector,
+  });
+  const evaluation = evaluateSimilarity(
+    { thesisText: common.direction.thesis, openingMode: written.hook, blocks: [] },
+    common.history
+  );
+
+  const document: XiaohongshuDocument = {
+    schemaVersion: 3,
+    scenario: 'xiaohongshu',
+    activityId: input.activityId,
+    hook: written.hook,
+    titleOptions: written.titleOptions,
+    mainAngle: written.mainAngle,
+    body: written.body,
+    imageSequence: sequence,
+    coverSuggestion,
+    tags: written.tags,
+    cta: written.cta,
+    direction: common.direction,
+    generationMeta: {
+      model: 'platform-llm',
+      workflowVersion: WORKFLOW_VERSION,
+      generatedAt: new Date().toISOString(),
+      repairCount: evaluation.tooRepetitive ? 1 : 0,
+    },
+  };
+
+  try {
+    await saveContentDocument({
+      merchantId: input.merchantId,
+      activityId: input.activityId,
+      scenario: 'xiaohongshu',
+      truth: common.truth,
+      direction: common.direction,
+      document: document as unknown as Record<string, unknown>,
+      fingerprint,
+      evaluation,
+    });
+    await appendCreativeMemory(input.merchantId, 'xiaohongshu', fingerprint, input.activityId);
+  } catch {
+    /* DB 不可用时静默 */
+  }
+
+  return { document, missing: common.missing };
+}

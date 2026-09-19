@@ -364,3 +364,45 @@ model AiCreditLedger {
   @@index([clubId, createdAt])
   @@map("ai_credit_ledger")
 }
+
+/// Content Engine V3 —— 生成的内容文档
+/// scenario: detail | wechat | xiaohongshu | recap
+/// document 保存 PromoDocument JSON；truthSnapshot 保存生成时的 ActivityTruth 快照，
+/// 用于 Claim→Fact 复核与“事实是否漂移”的对账。
+model ContentDocument {
+  id            BigInt   @id @default(autoincrement())
+  merchantId    BigInt   @map("merchant_id")
+  activityId    BigInt?  @map("activity_id")
+  scenario      String
+  schemaVersion Int      @default(3) @map("schema_version")
+  version       Int      @default(1)
+  /// draft | published | archived
+  status        String   @default("draft")
+
+  truthSnapshot Json     @map("truth_snapshot")
+  direction     Json
+  document      Json
+  fingerprint   Json?
+  evaluation    Json?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([merchantId, scenario, createdAt])
+  @@index([activityId, scenario])
+  @@map("content_documents")
+}
+
+/// Content Engine V3 —— 创意指纹历史（反模板 / 反重复）
+/// scope = merchantId + scenario，每类保留最近 20 条以上
+model CreativeMemory {
+  id         BigInt   @id @default(autoincrement())
+  merchantId BigInt   @map("merchant_id")
+  activityId BigInt?  @map("activity_id")
+  scenario   String
+  fingerprint Json
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([merchantId, scenario, createdAt])
+  @@map("creative_memory")
+}

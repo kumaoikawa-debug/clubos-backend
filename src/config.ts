@@ -12,6 +12,11 @@ export const config = {
   /** 会员版「AI 全包」使用的平台 LLM Key（DeepSeek 等） */
   platformLlmKey: process.env.PLATFORM_LLM_KEY ?? '',
 
+  /** 视觉模型（照片识别）：未单独配置 PLATFORM_VISION_KEY 时回退平台 LLM Key（需该 Key 支持视觉） */
+  platformVisionKey: process.env.PLATFORM_VISION_KEY ?? '',
+  platformVisionModel: process.env.PLATFORM_VISION_MODEL ?? 'gpt-4o-mini',
+  platformVisionBase: process.env.PLATFORM_VISION_BASE ?? 'https://api.openai.com/v1',
+
   /** 免费版默认抽成比例（0~1），会员版按 merchants.commission_rate 覆盖 */
   defaultCommissionRate: Number(process.env.DEFAULT_COMMISSION_RATE ?? 0.05),
   /** 未支付订单自动关闭时间（分钟） */

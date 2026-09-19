@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ok, fail, logger, zodMessage, prisma } from '../lib';
 import { subscribe, getStatus, getInsights, type Cycle } from '../services/membershipService';
 import { proxyChat } from '../services/aiProxyService';
+import { analyzeImages } from '../services/visionService';
 import { encryptSecret } from '../services/vault';
 
 const router = Router();
@@ -67,6 +68,39 @@ router.post('/ai-proxy', async (req, res) => {
     res.json(ok(result));
   } catch (err) {
     logger.error('[ai-proxy] 失败', err);
+    res.status(400).json(fail(err instanceof Error ? err.message : String(err)));
+  }
+});
+
+/** POST /api/pay/membership/ai-vision · 视觉模型代理（照片识别，v151）
+ *  入参：images:[{ id, src }]（src 为 http(s) 图片地址或 dataURL）+ 可选 scenario / prompt / model。
+ *  出参：{ results:[{ id, analysis|null, error? }], model, credits, balance }。
+ *  Key 由平台在服务端持有（PLATFORM_VISION_KEY，回退 PLATFORM_LLM_KEY），按「每张 1 AI 积分」计量。 */
+router.post('/ai-vision', async (req, res) => {
+  const parsed = z
+    .object({
+      images: z
+        .array(z.object({ id: z.string().min(1), src: z.string().min(1) }))
+        .min(1)
+        .max(12),
+      scenario: z.string().optional(),
+      prompt: z.string().optional(),
+      model: z.string().optional(),
+    })
+    .safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(`参数校验失败：${zodMessage(parsed.error)}`));
+    return;
+  }
+  try {
+    const result = await analyzeImages(req.admin!.sub, parsed.data.images, {
+      scenario: parsed.data.scenario,
+      prompt: parsed.data.prompt,
+      model: parsed.data.model,
+    });
+    res.json(ok(result));
+  } catch (err) {
+    logger.error('[ai-vision] 失败', err);
     res.status(400).json(fail(err instanceof Error ? err.message : String(err)));
   }
 });

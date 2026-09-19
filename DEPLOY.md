@@ -13,13 +13,17 @@
    │  ① 填「总平台后端地址 + 管理员口令 + 商家ID」
    │  ② POST /api/pay/admin/login  → JWT（缓存在本机 localStorage）
    ▼
-总平台后端 (clubos-backend)   ←── 唯一持有 PLATFORM_LLM_KEY
+总平台后端 (clubos-backend)   ←── 唯一持有 PLATFORM_LLM_KEY / PLATFORM_VISION_KEY
    │  ③ POST /api/pay/membership/ai-proxy  (Bearer JWT)
    │       ├─ 校验 JWT（requireAdmin）→ req.admin.sub = 数字 merchantId
    │       ├─ 按 AI 积分计量（base/gift/paid → 消耗 base→gift→paid）
    │       └─ proxyChat() → DeepSeek（system / response_format / temperature 透传）
+   │  ③' POST /api/pay/membership/ai-vision  (Bearer JWT)   ← v151 照片识别
+   │       ├─ 同上校验 JWT；入参 images:[{id,src}]（URL 或 dataURL）
+   │       ├─ 每张成功识别扣 1 AI 积分（预检余额）
+   │       └─ analyzeImages() → 视觉模型（OpenAI 兼容 /v1/chat/completions）
    ▼
-DeepSeek API
+DeepSeek API（文案） / 视觉模型（照片识别）
 ```
 
 **解决的问题**：之前每次部署新沙盒后，测试用的 DeepSeek Key 存于前端 `localStorage`（按 origin 隔离、换沙盒即清空），需反复重填。
@@ -52,6 +56,9 @@ DeepSeek API
 | `ADMIN_CODE` | ✅ | `clubos-admin` | 管理员登录口令（demo 用明文；生产应改 OAuth / 密码哈希） |
 | `KEY_VAULT_SECRET` | ✅ | `change-me-32bytes-key-vault-sec` | 加密存储 LLM Key 的密钥，**必须正好 32 字节** |
 | `PLATFORM_LLM_KEY` | ✅（AI 代理用） | `""` | 平台统一 DeepSeek Key；留空则 `/ai-proxy` 不可用 |
+| `PLATFORM_VISION_KEY` | ❌（照片识别用） | `""` | 视觉模型 Key；**留空时回退 `PLATFORM_LLM_KEY`**（需该 Key 支持视觉） |
+| `PLATFORM_VISION_MODEL` | ❌ | `gpt-4o-mini` | 视觉模型名，如 `qwen-vl-max` / `glm-4v-flash` / `gemini-2.0-flash` |
+| `PLATFORM_VISION_BASE` | ❌ | `https://api.openai.com/v1` | 视觉模型 Base URL（OpenAI 兼容端点） |
 | `DEFAULT_COMMISSION_RATE` | ❌ | `0.05` | 免费版默认抽成（0~1）；会员版按 `merchants.commission_rate` 覆盖为 0 |
 | `ORDER_EXPIRE_MINUTES` | ❌ | `30` | 未支付订单自动关闭（分钟） |
 | `WECHAT_MCH_ID` 等 | ❌ | `""` | 微信支付服务商参数；**留空即走桩实现，不发起真实请求** |
