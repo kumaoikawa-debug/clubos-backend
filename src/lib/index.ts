@@ -1,6 +1,20 @@
 import { PrismaClient } from '@prisma/client';
 import type { ZodError } from 'zod';
 
+/**
+ * ★ BigInt 序列化补丁（全局，必须在任何 res.json 之前生效）
+ *
+ * Prisma 的 BigInt 主键 / 金额字段无法被 JSON.stringify 处理，未打补丁时
+ * `res.json(row)` 会抛 `Do not know how to serialize a BigInt` → 接口 500
+ * （线上实测：GET /api/pay/ai-credit/summary）。
+ *
+ * 统一序列化为十进制字符串：id 类字段前端按字符串处理即可；
+ * 金额字段本身就是 Decimal→string，不引入浮点误差。
+ */
+(BigInt.prototype as unknown as { toJSON: () => string }).toJSON = function toJSON(this: bigint) {
+  return this.toString();
+};
+
 export const prisma = new PrismaClient({
   log: process.env.NODE_ENV === 'development' ? ['warn', 'error'] : ['error'],
 });
