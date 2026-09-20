@@ -22,6 +22,7 @@ import {
 } from '../contracts/creativeDirection';
 import { buildPrompt, callJsonLlm } from './llm';
 import type { VisionResult } from '../contracts/visionResult';
+import { logger } from '../../lib';
 
 export interface MarketingInsight {
   /** 真正卖的是什么 */
@@ -159,7 +160,12 @@ export async function generateDirections(
       note: 'V3 creative directions',
     });
     if (Array.isArray(json.directions)) raw = json.directions as Partial<CreativeDirection>[];
-  } catch {
+  } catch (err) {
+    // ★ 绝不静默吞错：LLM 失败会退化成 dir-fallback-* 兜底方向，
+    //   若不打日志，线上只能看到「方向很模板」而查不出是 Key 失效 / 积分不足 / 超时。
+    logger.warn(
+      `[v3/direction] LLM 生成方向失败，走确定性兜底：${err instanceof Error ? err.message : String(err)}`
+    );
     raw = [];
   }
 
