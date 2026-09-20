@@ -104,6 +104,9 @@ function median(nums: number[]): number {
 
 function humanDuration(ms: number): string {
   if (!ms || ms <= 0) return '—';
+  /* ★ 12.85 秒被 Math.round 成「0 分钟」—— 指标看着像没有数据。
+     不足 1 分钟按秒显示，1 分钟以上才进分钟档。 */
+  if (ms < 60000) return `${Math.max(1, Math.round(ms / 1000))} 秒`;
   const min = Math.round(ms / 60000);
   if (min < 60) return `${min} 分钟`;
   const h = Math.floor(min / 60);

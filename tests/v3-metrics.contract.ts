@@ -194,6 +194,18 @@ function fingerprintsFor(openingMode: string, thesis: string) {
   check('M6 Time-to-Publish：平均 60 分钟', m.timeToPublish.avgMs === 3600000, `got ${m.timeToPublish.avgMs}`);
   check('M6 Time-to-Publish：中位数 60 分钟', m.timeToPublish.medianMs === 3600000, `got ${m.timeToPublish.medianMs}`);
   check('M6 Time-to-Publish：人类可读 = 1 小时', m.timeToPublish.avgHuman === '1 小时', `got ${m.timeToPublish.avgHuman}`);
+
+  /* 线上实测：12850ms 曾被 Math.round(ms/60000) 显示成「0 分钟」，看着像没数据。
+     不足 1 分钟必须按秒显示 —— 反向验证：断言里同时点名「不得出现 0 分钟」。 */
+  const sec = computeQualityMetrics([
+    doc({ id: 's1', status: 'published', createdAt: new Date('2026-09-01T10:00:00Z'), publishedAt: new Date('2026-09-01T10:00:12.850Z') }),
+  ]);
+  check('M6b 12.85 秒：不得显示成「0 分钟」', sec.timeToPublish.avgHuman !== '0 分钟', `got ${sec.timeToPublish.avgHuman}`);
+  check('M6b 12.85 秒：人类可读 = 13 秒', sec.timeToPublish.avgHuman === '13 秒', `got ${sec.timeToPublish.avgHuman}`);
+  const m1 = computeQualityMetrics([
+    doc({ id: 's2', status: 'published', createdAt: new Date('2026-09-01T10:00:00Z'), publishedAt: new Date('2026-09-01T10:01:00Z') }),
+  ]);
+  check('M6b 满 1 分钟进分钟档（1 分钟）', m1.timeToPublish.avgHuman === '1 分钟', `got ${m1.timeToPublish.avgHuman}`);
 }
 
 console.log(results.join('\n'));
