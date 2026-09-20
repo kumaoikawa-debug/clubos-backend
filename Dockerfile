@@ -1,5 +1,6 @@
 # ClubOS 总平台后端 · 镜像构建
-FROM node:20-alpine
+# node:22 — @mastra/core@1.67.0 engines 要求 node>=22.13.0（node:20 下 npm 报 EBADENGINE 且运行期不可靠）
+FROM node:22-alpine
 
 WORKDIR /app
 
