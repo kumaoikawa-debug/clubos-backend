@@ -18,6 +18,8 @@
  *   V3_LIVE_ONLY          只跑这些场次       默认空（逗号分隔，如 acc-03,acc-17）—— 用于「只补跑失败的那几场」
  *   V3_LIVE_RETRY         瞬时故障重试次数   默认 3（仅对 5xx / 网络错误 / 非 JSON 响应重试；4xx 不重试）
  *   V3_LIVE_TIMEOUT_MS    单请求超时(ms)     默认 180000（超时按瞬时故障重试；防「挂住但不报错」）
+ *   V3_LIVE_ALLOW_FALLBACK 余额为 0 时照跑   默认不设（=立刻退出）。跑前预检发现积分为 0 时，
+ *                         整轮 30 场只会产出兜底数据，白跑；要那份数据才设 1
  *   V3_LIVE_PREFIX        活动 id 前缀       默认 p6-（便于识别/可重跑，不覆盖真实活动）
  *   V3_LIVE_OUT           输出 JSON 路径     默认 ./tmp/v3-acceptance-live.json
  *   V3_LIVE_HTML          输出 HTML 路径     默认 ./tmp/v3-acceptance-live.html
@@ -105,6 +107,55 @@ async function login(): Promise<string> {
   const token = j.data?.token;
   if (!token) throw new Error(`登录响应里没有 token：${text.slice(0, 200)}`);
   return token;
+}
+
+/**
+ * 跑前额度预检。
+ *
+ * ★ 为什么必须在开跑之前查：
+ *   平台 AI 积分每月基础额度只有 1000 分（aiCreditService.AI_BASE_MONTHLY），
+ *   一轮 30 场跑批（50+ 次 LLM 调用）就能吃光。额度一旦归零，
+ *   proxyChat 会在**第一步**直接抛「AI 积分不足」——
+ *   于是整轮 30 场全部静默落到确定性兜底：跑批照样"成功"、请求全是 200，
+ *   多样性矩阵却全是兜底线数据，而报告当时还说不出原因。
+ *   实测代价：38 分钟跑完才发现 22/30 兜底，白跑一轮。
+ *   更糟的是跑批与生产共用 merchant，会把生产俱乐部的额度吃干。
+ */
+async function preflightCredits(token: string, fixtureCount: number): Promise<void> {
+  let balance = -1;
+  try {
+    const r = await fetch(`${BASE}/api/pay/ai-credit/summary`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+    const j: any = await r.json();
+    balance = Number(j?.data?.balance ?? -1);
+  } catch {
+    console.log('  ⚠ 额度预检失败（拿不到余额），继续跑；若兜底率异常请查积分账本\n');
+    return;
+  }
+  if (!Number.isFinite(balance) || balance < 0) return;
+
+  // 经验值：detail 每场约 2~3 次 LLM 调用（方向 / 合成 / 偶尔 repair），渠道各约 2 次。
+  // 宁可高估 —— 低估会让人以为额度够。
+  const need = fixtureCount * 3 + Math.min(SAMPLE, fixtureCount) * 6;
+  console.log(`  AI 积分余额 ${balance}（跑满 ${fixtureCount} 场约需 ${need}）`);
+
+  if (balance <= 0) {
+    console.log(
+      '\n  ⚠⚠ 余额为 0：这一轮会**全部**落到确定性兜底 —— 请求都会成功、\n' +
+        '     多样性矩阵却只反映兜底线，回答不了「真实 LLM 会不会一个样」。\n' +
+        '     处置：① 后台给该俱乐部充值积分；② 或等每月基础额度刷新（月清）。\n' +
+        '     确认只要兜底数据，设 V3_LIVE_ALLOW_FALLBACK=1 重跑。\n'
+    );
+    if (process.env.V3_LIVE_ALLOW_FALLBACK !== '1') process.exit(2);
+  } else if (balance < need) {
+    console.log(
+      `  ⚠ 余额可能不足（${balance} < 约 ${need}）：后半程会陆续退化成兜底，\n` +
+        '     届时看报告里的「兜底原因」确认是不是积分问题\n'
+    );
+  }
+  console.log('');
 }
 
 interface GenOutcome {
@@ -376,6 +427,8 @@ async function main() {
       (ONLY.length ? `（补跑：${ONLY.join(',')}）` : '') +
       `，渠道抽样 ${Math.min(SAMPLE, fixtures.length)} 场，重试 ${RETRY}\n`
   );
+
+  await preflightCredits(token, fixtures.length);
 
   const runs: RunRec[] = [];
 
