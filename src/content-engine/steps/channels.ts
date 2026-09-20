@@ -320,22 +320,66 @@ export async function writeXiaohongshu(
   };
 }
 
+/**
+ * 小红书标签：只从这场自己的事实里取词。
+ * 早先只取 [place, difficulty] —— 于是所有「没填难度」的场次只剩 1 个 tag，
+ * 而且 '#中等' 这种难度词当话题毫无意义。改成：地点 + 「本场事实里真的出现过」的
+ * 活动形态词（徒步/露营/夜跑…）。判据是 haystack.includes(w)，所以不会凭空造话题。
+ */
+const XHS_TOPIC_WORDS = [
+  '徒步', '穿越', '登顶', '露营', '野餐', '骑行', '溯溪', '攀登', '雪山', '越野', '夜跑', '接力',
+  '摄影', '拍照', '亲子', '研学', '团建', '观星', '星空', '自驾', '海岛', '浮潜', '滑雪', '攀岩',
+  '采摘', '稻田', '飞盘', '瑜伽', '净山', '公益', '温泉', '度假', '戈壁', '沙漠', '探洞', '洞穴',
+  '溪谷', '自然课', '地质', 'Citywalk', 'citywalk', '城市漫步', '环湖', '山径', '赛事', '日出',
+  '日落', '夜爬', '漂流', '跑步', '糖水', '美食', '农家', '步行', '开板', '浮潜',
+];
+
+function xhsTags(truth: ActivityTruth): string[] {
+  const f = truth.confirmedFacts;
+  const haystack = [
+    f.title,
+    f.place,
+    f.difficulty,
+    f.distance,
+    f.elevation,
+    ...truth.fee.include,
+    ...truth.fee.exclude,
+    ...truth.checklist.required,
+    ...truth.checklist.recommended,
+    ...truth.groundedScenes.map((s) => s.value),
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const out: string[] = [];
+  const push = (t: unknown) => {
+    const s = String(t ?? '').replace(/[\s·/|｜]+/g, '').slice(0, 16);
+    if (s && out.indexOf(s) < 0) out.push(s);
+  };
+  if (f.place) push(f.place);
+  for (const w of XHS_TOPIC_WORDS) if (haystack.indexOf(w) >= 0) push(w);
+  return out.slice(0, 8);
+}
+
 function deterministicXhs(
   truth: ActivityTruth,
   direction: CreativeDirection
 ): { hook: string; titleOptions: string[]; mainAngle: string; body: string; tags: string[]; cta: string } {
   const f = truth.confirmedFacts;
+  const scenes = truth.groundedScenes.map((s) => s.value).slice(0, 5);
   const lines = [
     factLine(truth),
     truth.fee.include.length ? `费用含：${truth.fee.include.join('、')}` : '',
     truth.checklist.required.length ? `必带：${truth.checklist.required.join('、')}` : '',
+    // 方案/行程原文是用户自己给的证据 —— 早先兜底没带上它，素材薄的场次正文会短到 59 字
+    scenes.length ? `行程与现场：${scenes.join('；')}` : '',
   ].filter(Boolean);
   return {
     hook: `${f.place || '这条线路'}，${direction.communicationAngle}`.slice(0, 60),
     titleOptions: deterministicTitles(truth, direction).slice(0, 4),
     mainAngle: direction.communicationAngle,
     body: `${direction.thesis}\n\n${lines.join('\n')}`.slice(0, 1000),
-    tags: [f.place, f.difficulty].filter(Boolean).map((t) => String(t).slice(0, 16)),
+    tags: xhsTags(truth),
     cta: '',
   };
 }

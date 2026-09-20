@@ -52,6 +52,8 @@ export function allowedFactTokens(truth: ActivityTruth): Set<string> {
     if (v) raw.push(String(v));
   }
   if (f.price !== undefined) raw.push(String(f.price));
+  // 名额上限也是已确认事实 —— 漏了它，「限额 20 人」这种正常表述里的 20 会被当成编造删掉
+  if (f.limit !== undefined) raw.push(String(f.limit));
   if (f.days) raw.push(String(f.days));
   raw.push(...truth.fee.include, ...truth.fee.exclude);
   raw.push(...truth.groundedScenes.map((s) => s.value));

@@ -15,7 +15,6 @@ import type {
 } from '../contracts/creativeDirection';
 import {
   normalizeStyleVector,
-  neutralStyleVector,
   styleVectorDistance,
   isSameThesis,
   clamp01,
@@ -196,6 +195,141 @@ function normalizeDirection(
   };
 }
 
+/* ============================================================
+ * 兜底方向的 StyleVector —— 必须由「这一场自己的证据」推出来
+ * ==========================================================
+ * 为什么非改不可：原先 3 个兜底方向都从 neutralStyleVector() 起跳，于是 30 场活动
+ * 算出的风格向量**完全相同**（styleVectorDistance min=0）—— 等于「不管什么活动都长一个样」，
+ * 而文档的硬要求恰恰是「差异化必须来自 StyleVector 连续量纲 + 本场证据」。
+ * 更直接的后果：选中率最高的第 1 个方向恒为 rhythm=slow / whitespace=tight，
+ * 公众号渲染器的段距/行高对所有活动都一样。
+ *
+ * 映射关系（每一项都能在 ActivityTruth 里找到出处，不做无据推断）：
+ *   informationWeight  ← 费用项 / 装备项 / 里程海拔等硬指标的条数
+ *   textDensity        ← 行程条目数（要交代的步骤越多，字越密）
+ *   documentaryLevel   ← 行程条目数 + 接地场景数
+ *   aspirationLevel    ← 海拔/里程量级（5025 米的雪山 ≠ 6 公里的净山）
+ *   challengeSignal    ← 难度词 + 里程/爬升量级
+ *   socialEnergy       ← 事实文本里是否出现人群型活动词（亲子/团建/接力/飞盘…）
+ *   lifestyleSignal    ← 是否出现生活方式词（温泉/度假/野餐/摄影/市集…）
+ *   professionalSignal ← 费用与装备里是否出现向导/教练/领队/保障/许可/保险/讲师
+ *   emotionalWeight    ← 素材里是否出现日出/星空/云海/夜色这类画面词
+ *   imageDominance     ← 可描写的画面条数（素材越多越能让图说话）
+ *   ctaStrength        ← 价格/名额/装备清单的完备度（信息给全了才敢催报名）
+ *   typographyEnergy   ← 标题长度（长标题需要更收的排版能量）
+ */
+const DIFFICULTY_RANK: Array<[RegExp, number]> = [
+  [/技术/, 1],
+  [/高强度|挑战|极限/, 0.85],
+  [/中等/, 0.55],
+  [/轻松|休闲/, 0.25],
+];
+
+/** '海拔5025米' / '累计爬升800米' / '往返34公里' → 0~1 的量级 */
+function magnitude(raw: unknown): number {
+  if (raw === undefined || raw === null || raw === '') return 0;
+  const s = String(raw);
+  const m = s.match(/\d+(?:\.\d+)?/g);
+  if (!m || !m.length) return 0;
+  const n = Math.max.apply(null, m.map(Number));
+  if (!Number.isFinite(n)) return 0;
+  if (/海拔|爬升|米/.test(s)) return clamp01(n / 6000);
+  if (/公里|km|KM/.test(s)) return clamp01(n / 80);
+  return clamp01(n / 100);
+}
+
+export function evidenceStyleVector(truth: ActivityTruth): StyleVector {
+  const f = truth.confirmedFacts;
+  const scenes = truth.groundedScenes;
+  const text = [
+    f.title,
+    f.place,
+    f.difficulty,
+    f.distance,
+    f.elevation,
+    ...truth.fee.include,
+    ...truth.fee.exclude,
+    ...truth.checklist.required,
+    ...truth.checklist.recommended,
+    ...scenes.map((s) => s.value),
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const itinCount = truth.itinerary.length;
+  const sceneCount = scenes.length;
+  /** 素材/行程原文的**总字数** —— 这是「这场能讲多少」的直接证据。
+      只数条数会撞车：acc-14「含破冰游戏与定向寻宝」与 acc-29「零基础友好」都是
+      1 条素材 / 3 项费用 / 0 行程 / 轻松 / 12 字标题，条数口径下完全同构 → 向量一模一样。 */
+  const sceneChars = scenes.reduce((n, s) => n + String(s.value).length, 0);
+  const feeChars = [...truth.fee.include, ...truth.fee.exclude, ...truth.checklist.required]
+    .join('')
+    .length;
+  const feeCount = truth.fee.include.length + truth.fee.exclude.length;
+  const gearCount = truth.checklist.required.length + truth.checklist.recommended.length;
+  const hardCount = [f.distance, f.elevation, f.difficulty].filter(Boolean).length;
+  const titleLen = String(f.title ?? '').length;
+
+  const diffRank = DIFFICULTY_RANK.reduce(
+    (acc, r) => (r[0].test(String(f.difficulty ?? '')) ? Math.max(acc, r[1]) : acc),
+    0
+  );
+  const mag = Math.max(magnitude(f.elevation), magnitude(f.distance));
+  const has = (words: string[]) => words.some((w) => text.indexOf(w) >= 0);
+
+  const social = has(['亲子', '团建', '接力', '飞盘', '瑜伽', '研学', '家庭', '破冰', '聚会', '同行']);
+  const lifestyle = has(['温泉', '度假', '野餐', '糖水', '摄影', '市集', '咖啡', '美食', '山居']);
+  const professional = has(['向导', '教练', '领队', '保障', '许可', '保险', '讲师', '导师', '急救']);
+  const emotional = has(['日出', '日落', '星空', '银河', '云海', '夜色', '晚霞', '晨雾', '灯火']);
+
+  /* insight 只在证据薄时兜住几个表达维度，不参与事实判断 */
+  const thin = sceneCount === 0 && feeCount === 0;
+
+  const base: Partial<StyleVector> = {
+    imageDominance: clamp01(0.3 + Math.min(0.42, sceneCount * 0.05) + (has(['摄影', '观星', '星空', '日出', '云海']) ? 0.12 : 0)),
+    textDensity: clamp01(
+      0.24 +
+        Math.min(0.4, itinCount * 0.06) +
+        feeCount * 0.02 +
+        gearCount * 0.015 +
+        titleLen * 0.004 +
+        Math.min(0.1, sceneChars * 0.004)
+    ),
+    informationWeight: clamp01(
+      0.28 +
+        feeCount * 0.05 +
+        gearCount * 0.04 +
+        hardCount * 0.08 +
+        titleLen * 0.003 +
+        Math.min(0.14, sceneChars * 0.005) +
+        Math.min(0.1, feeChars * 0.004)
+    ),
+    emotionalWeight: clamp01(0.3 + (emotional ? 0.28 : 0) + (lifestyle ? 0.12 : 0) + (thin ? 0.08 : 0)),
+    documentaryLevel: clamp01(
+      0.25 + Math.min(0.4, itinCount * 0.06) + Math.min(0.25, sceneCount * 0.03) + Math.min(0.22, sceneChars * 0.006)
+    ),
+    aspirationLevel: clamp01(0.3 + mag * 0.45 + (lifestyle ? 0.08 : 0)),
+    socialEnergy: clamp01(0.25 + (social ? 0.4 : 0) + Math.min(0.2, gearCount * 0.02) + (f.limit && f.limit >= 30 ? 0.08 : 0)),
+    challengeSignal: clamp01(0.2 + diffRank * 0.45 + mag * 0.3),
+    lifestyleSignal: clamp01(0.25 + (lifestyle ? 0.35 : 0)),
+    professionalSignal: clamp01(0.28 + (professional ? 0.35 : 0) + Math.min(0.2, feeCount * 0.03)),
+    ctaStrength: clamp01(
+      0.3 + (f.price !== undefined ? 0.15 : 0) + Math.min(0.25, gearCount * 0.04) + (f.limit ? 0.08 : 0)
+    ),
+    typographyEnergy: clamp01(0.3 + Math.min(0.35, titleLen / 60) + (diffRank >= 0.85 ? 0.1 : 0)),
+  };
+
+  const textDensity = base.textDensity as number;
+  const imageDominance = base.imageDominance as number;
+  return normalizeStyleVector({
+    ...base,
+    /* 节奏与留白也由证据折算，不做「三档模板」 */
+    rhythm: textDensity >= 0.55 ? 'fast' : textDensity <= 0.36 ? 'slow' : 'medium',
+    whitespace:
+      textDensity >= 0.6 ? 'tight' : imageDominance >= 0.6 && textDensity <= 0.46 ? 'generous' : 'balanced',
+  });
+}
+
 /**
  * 去重：文档要求 3 个方向必须「明显不同」。
  * 同 thesis 视为重复；styleVector 距离过近也降权删除。
@@ -212,20 +346,23 @@ export function dedupeDirections(
     if (dupThesis || dupStyle) continue;
     kept.push(d);
   }
-  // 不足 3 个时用中性/变换量纲补齐，保证下游始终有选择空间
+  // 不足 3 个时用「本场证据推出的向量」在各量纲上展开，保证下游始终有选择空间
+  const evBase = evidenceStyleVector(truth);
   let i = 0;
   while (kept.length < 3) {
     const seed = truth.confirmedFacts.title ?? 'activity';
     const jitter = (base: number, step: number) =>
       clamp01(base + (i % 2 === 0 ? step : -step * 0.6));
-    const base = kept[0]?.styleVector ?? neutralStyleVector();
+    const base = kept[0]?.styleVector ?? evBase;
     const v = normalizeStyleVector({
       ...base,
       documentaryLevel: jitter(base.documentaryLevel, 0.25 + i * 0.1),
       aspirationLevel: jitter(base.aspirationLevel, 0.2 + i * 0.08),
       socialEnergy: jitter(base.socialEnergy, 0.18 + i * 0.08),
-      rhythm: (['slow', 'medium', 'fast'] as const)[i % 3],
-      whitespace: (['tight', 'balanced', 'generous'] as const)[i % 3],
+      // i=0 的节奏/留白保持证据取值（它被 selectDirection 选中的概率最高）；
+      // i>0 才在节奏上做展开，保证 3 个候选之间也互不重复。
+      rhythm: i === 0 ? base.rhythm : (['slow', 'medium', 'fast'] as const)[i % 3],
+      whitespace: i === 0 ? base.whitespace : (['tight', 'balanced', 'generous'] as const)[i % 3],
     });
     kept.push({
       id: `dir-fallback-${i + 1}`,
