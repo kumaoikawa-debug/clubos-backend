@@ -523,6 +523,73 @@ check('J3 ★空结构不得被判为「完全一致」：无段落可比时 str
 });
 
 /* ============================================================
+ * §K 第二次线上跑批（30 场真实 LLM）逼出来的两条
+ *
+ *   K1 兜底方向把「候选序号」写进了用户可见文案 —— 且 D2 的数字判据抓不住它
+ *   K2 兜底在文档里不可观测 —— model 写着 platform-llm，实际一个 token 都没调
+ * ========================================================== */
+
+check('K1 ★用户可见文案不得含兜底脚手架（「第 N 个角度」「备用角度」）', () => {
+  /*
+   * 为什么必须用**文本判据**、不能只靠 D2 的数字判据：
+   *   grounded 判据是「子串包含」—— 数字 n 只要被事实池里任一 token 包含就算有据。
+   *   于是「第 1 个角度」的 1 常被日期里的「10 / 11」放过，
+   *   整条缺陷能从数字判据底下走过去（线上只在兜底取到第 3 个候选时才炸，
+   *   因为 3 恰好没被任何 token 包含）。脚手架话术必须直接点名。
+   */
+  const SCAFFOLD: RegExp[] = [
+    /第\s*\d+\s*个角度/,
+    /备用角度/,
+    /候选\s*\d+\s*(?:号|个)/,
+    /(?:方向|角度)\s*\d+\s*[:：]/,
+  ];
+  const leaked: string[] = [];
+  for (const r of runs) {
+    for (const t of r.texts) {
+      for (const re of SCAFFOLD) {
+        const m = re.exec(t.text);
+        if (m) leaked.push(`${r.id}/${r.scenario}@${t.label}：${m[0]}`);
+      }
+    }
+  }
+  must(leaked.length === 0, `脚手架话术泄漏 ${leaked.length} 处 —— ${leaked.slice(0, 5).join(' | ')}`);
+});
+
+check('K2 ★兜底必须可观测：文档要自报 llmUsed，兜底时必须带 fallbackReason', () => {
+  /*
+   * 掉额度 / Key 失效时全线静默兜底：请求照样 200、文档照样生成、
+   * model 还写着 platform-llm，运维侧几乎零信号。这里把「必须自报」钉死。
+   */
+  const bad: string[] = [];
+  for (const r of runs) {
+    const meta = (r.doc.generationMeta || {}) as Record<string, unknown>;
+    if (typeof meta.llmUsed !== 'boolean') {
+      bad.push(`${r.id}/${r.scenario}:generationMeta.llmUsed 缺失`);
+      continue;
+    }
+    if (meta.llmUsed === false && !String(meta.fallbackReason ?? '').trim()) {
+      bad.push(`${r.id}/${r.scenario}:llmUsed=false 却没写 fallbackReason（只知道兜底、不知道为什么）`);
+    }
+  }
+  must(bad.length === 0, bad.slice(0, 6).join(' | '));
+});
+
+check('K3 ★前提校验：离线契约跑的是确定性兜底（否则「兜底线守住了」这句话是空的）', () => {
+  /*
+   * 这份契约的全部意义是「断言兜底路径的不变量」。
+   * 如果某天离线环境突然能连上 LLM，跑的就全是 LLM 产出，
+   * 于是它再也证明不了兜底线 —— 而失败不会有任何提示。
+   * 无 Key 时 callJsonLlm 必抛（proxyChat → 积分/Key 检查），所以这里恒成立；
+   * 真在带 Key 的环境跑，应当看到它以「前提不成立」失败，而不是假装通过。
+   */
+  const usedLlm = runs.filter((r) => (r.doc.generationMeta || {}).llmUsed === true).length;
+  must(
+    usedLlm === 0,
+    `有 ${usedLlm} 篇真的走了 LLM —— 本契约必须在无 Key 环境下跑（它验的是兜底线）`
+  );
+});
+
+/* ============================================================
  * 汇总
  * ========================================================== */
 

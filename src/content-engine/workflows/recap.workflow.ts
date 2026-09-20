@@ -106,6 +106,8 @@ export async function runRecapPipeline(input: RecapInput): Promise<RecapResult> 
       // 回顾目前没有改稿步骤 —— 「像历史」不能谎报成「改过一次」
       repairCount: 0,
       repetitive: evaluation.tooRepetitive,
+      llmUsed: common.directionSource.llmUsed,
+      fallbackReason: common.directionSource.reason || undefined,
     },
   };
 

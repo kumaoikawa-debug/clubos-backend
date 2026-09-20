@@ -120,6 +120,9 @@ export async function runDetailPipeline(
       workflowVersion: WORKFLOW_VERSION,
       generatedAt: new Date().toISOString(),
       repairCount: repairs,
+      // 兜底必须可观测：只写 model:'platform-llm' 看不出「实际有没有用上 LLM」
+      llmUsed: common.directionSource.llmUsed,
+      fallbackReason: common.directionSource.reason || undefined,
     },
   };
 

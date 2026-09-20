@@ -76,6 +76,18 @@ export interface GenerationMeta {
    *   「像不像历史」单独记在这里。
    */
   repetitive?: boolean;
+  /**
+   * 创意方向是否真的由 LLM 产出（false = 走了确定性兜底）。
+   *
+   * ★ 必须落进文档：`model: 'platform-llm'` 只说明「本该走 LLM」，
+   *   看不出**实际有没有用上**。积分用尽 / Key 失效时全线兜底，请求照样 200、
+   *   文档照样生成、日志里只有一行 warn —— 运维侧几乎零信号，
+   *   只能靠人工觉得「最近文案怎么这么模板」。
+   *   验收跑批 30 场里 22 场是兜底，就是靠等价的旁证才发现的。
+   */
+  llmUsed?: boolean;
+  /** 兜底原因（仅 llmUsed=false 时存在）：积分不足 / 平台 Key 未配置 / 超时 / 供应商报错 */
+  fallbackReason?: string;
 }
 
 export interface PromoDocument {

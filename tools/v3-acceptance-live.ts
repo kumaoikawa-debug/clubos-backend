@@ -17,6 +17,7 @@
  *   V3_LIVE_LIMIT         跑前 N 场          默认 30（0=全部）
  *   V3_LIVE_ONLY          只跑这些场次       默认空（逗号分隔，如 acc-03,acc-17）—— 用于「只补跑失败的那几场」
  *   V3_LIVE_RETRY         瞬时故障重试次数   默认 3（仅对 5xx / 网络错误 / 非 JSON 响应重试；4xx 不重试）
+ *   V3_LIVE_TIMEOUT_MS    单请求超时(ms)     默认 180000（超时按瞬时故障重试；防「挂住但不报错」）
  *   V3_LIVE_PREFIX        活动 id 前缀       默认 p6-（便于识别/可重跑，不覆盖真实活动）
  *   V3_LIVE_OUT           输出 JSON 路径     默认 ./tmp/v3-acceptance-live.json
  *   V3_LIVE_HTML          输出 HTML 路径     默认 ./tmp/v3-acceptance-live.html
@@ -95,6 +96,8 @@ async function login(): Promise<string> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code: adminCode(), merchant_id: MERCHANT }),
+    // 登录不该慢：冷启动也远不到 60s。用同一个超时兜住「连登录都挂住」的情况。
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   const text = await r.text();
   if (!r.ok) throw new Error(`登录失败 HTTP ${r.status}：${text.slice(0, 200)}`);
@@ -182,6 +185,17 @@ function actualFor(fx: Fixture): Record<string, unknown> {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * ★单请求超时（默认 180s，`V3_LIVE_TIMEOUT_MS` 可覆盖）。
+ *
+ * 为什么必须有：Render 免费实例冷启动 / LLM 侧抖动时，一个请求可能长时间不返回也**不报错**，
+ * 此时进程 CPU 0%、只挂着一个到 Render 边缘节点的 ESTABLISHED 连接 ——
+ * 从外面看「跑批还在跑」，实际整轮已经被一个请求无限期卡住，既不产出也不失败。
+ * 没有超时就没有「失败」，没有失败就没有重试，跑批会静默烂在那里。
+ * 超时抛 AbortError → httpStatus=0 → isTransient 判为瞬时故障 → 走既有重试。
+ */
+const REQUEST_TIMEOUT_MS = Number(process.env.V3_LIVE_TIMEOUT_MS || 180_000);
+
 /** 只有「大概率跟内容无关」的失败才重试：网络异常 / 5xx / 非 JSON（Render 网关的 HTML 错误页）。
     4xx 一律不重试 —— 401 是鉴权真错、400 是入参真错，重试只会掩盖问题。 */
 function isTransient(o: GenOutcome): boolean {
@@ -202,6 +216,7 @@ async function generateOnce(
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       body: JSON.stringify(body),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     const text = await r.text();
     const ms = Date.now() - t0;
@@ -283,12 +298,36 @@ interface RunRec {
   weather: Violation[];
   /** 该场用的是真实 LLM 还是确定性兜底 */
   usedLlm: boolean;
+  /**
+   * 兜底原因（文档自述）。
+   *
+   * ★ 优先读 `generationMeta.llmUsed / fallbackReason`，读不到才退回「看方向 id 是不是
+   *   dir-fallback-*」这种旁证。旁证只能告诉你「兜底了」，说不了「为什么兜底」——
+   *   30 场里 22 场兜底时，最需要的恰恰是原因（积分不足？Key 未配？超时？）。
+   */
+  fallbackReason: string;
   /** 后端回传的 truth 与本工具复算的 truth 不一致的字段（前后端事实漂移探针） */
   truthDrift: string[];
 }
 
 function isFallbackDirection(id: unknown): boolean {
   return /^dir-fallback/.test(String(id ?? ''));
+}
+
+/**
+ * 「这一场到底走没走真实 LLM」。
+ *
+ * 首选文档自述的 `generationMeta.llmUsed`（后端从 v3 起会写），
+ * 读不到才退回「方向 id 是不是 dir-fallback-*」的旁证。
+ * ★ 旁证只回答「兜底了」，回答不了「为什么兜底」——
+ *   而掉额度这类故障，需要的正是原因：报「22/30 兜底」而说不出为什么，
+ *   等于把排查工作原样甩回给读报告的人。
+ */
+function docUsedLlm(doc: any, dirId: unknown): boolean {
+  if (!doc) return false;
+  const self = doc?.generationMeta?.llmUsed;
+  if (typeof self === 'boolean') return self;
+  return !isFallbackDirection(dirId);
 }
 
 /** 与离线契约同一入口 —— 审计的「事实池」必须用生产代码算，不能自己另写一套 */
@@ -413,7 +452,8 @@ function push(
     numbers: doc ? unsupportedNumbers(texts, truth, extraFacts) : [],
     prices: doc ? priceFabrication(texts, truth) : [],
     weather: doc ? weatherClaims(texts, truth) : [],
-    usedLlm: !!doc && !isFallbackDirection(dirId),
+    usedLlm: docUsedLlm(doc, dirId),
+    fallbackReason: doc ? String(doc?.generationMeta?.fallbackReason ?? '') : '',
     truthDrift: truthDriftOf(out.extra?.truth, truth),
   });
 }
@@ -429,6 +469,8 @@ interface Report {
   counts: Record<string, number>;
   failures: string[];
   llm: { detailRuns: number; usedLlm: number; fallback: number; fallbackRate: number };
+  /** 兜底原因 → 场次数。只有数字没有原因是不可行动的。 */
+  fallbackReasons: Record<string, number>;
   diversity: Record<string, DiversityStats>;
   repairs: Record<string, number>;
   /** 被判「与同渠道历史高度重复」的场次（与 repairs 分开：撞车 ≠ 改过稿） */
@@ -543,8 +585,22 @@ function report(runs: RunRec[], fixtures: Fixture[]) {
   if (wechat.length) console.log(`  公众号  ${wStats.count} 场 | 版式骨架 ${wStats.uniqStructures} 种 | maxSim=${wStats.maxThesisSim} | styleDist mean=${wStats.meanStyleDist}`);
   if (xStats.count) console.log(`  小红书  ${xStats.count} 场 | 版式 ${xStats.uniqStructures} 种 | maxSim=${xStats.maxThesisSim}`);
 
+  /*
+   * 兜底原因分布。
+   * ★ 「22/30 兜底」本身不是结论，只是个数字；能行动的是原因
+   *   （积分用尽 vs Key 未配置 vs 超时，三种处置完全不同）。
+   *   文档从 v3-llmObservable 起自报 fallbackReason，这里按原因归集。
+   */
+  const fallbackReasons: Record<string, number> = {};
+  for (const r of detailRuns) {
+    if (r.usedLlm) continue;
+    const key = r.fallbackReason || '(文档未上报原因)';
+    fallbackReasons[key] = (fallbackReasons[key] ?? 0) + 1;
+  }
+
   console.log('\n── 链路 ──');
   console.log(`  detail 走真实 LLM：${usedLlm}/${detailRuns.length}（兜底 ${fallback}，兜底率 ${((fallback / Math.max(1, detailRuns.length)) * 100).toFixed(1)}%）`);
+  if (fallback) console.log(`  兜底原因：${JSON.stringify(fallbackReasons, null, 0)}`);
   console.log(`  触发 repair 的场次（只有 detail 会真的改稿）：${JSON.stringify(repairs)}`);
   console.log(`  被判「与历史撞车」的场次：${JSON.stringify(repetitive)}`);
   console.log(`  单次请求 p50=${p50}ms p95=${p95}ms`);
@@ -556,6 +612,7 @@ function report(runs: RunRec[], fixtures: Fixture[]) {
     counts,
     failures,
     llm: { detailRuns: detailRuns.length, usedLlm, fallback, fallbackRate: fallback / Math.max(1, detailRuns.length) },
+    fallbackReasons,
     diversity: { detail: dStats, wechat: wStats, xiaohongshu: xStats },
     repairs,
     repetitive,
@@ -621,7 +678,7 @@ function writeArtifacts(runs: RunRec[], fixtures: Fixture[]) {
       <td>${r.ok ? 'ok' : 'FAIL'}</td><td>${r.ms}ms</td>
       <td>${esc(r.directionId)}</td>
       <td class="mono">${esc(r.structure).slice(0, 70)}</td>
-      <td>${r.usedLlm ? 'LLM' : '兜底'}</td>
+      <td title="${esc(r.fallbackReason)}">${r.usedLlm ? 'LLM' : '兜底'}${r.usedLlm || !r.fallbackReason ? '' : ' ⓘ'}</td>
       <td>${r.repairCount}</td>
       <td>${r.banned.length + r.numbers.length + r.prices.length}</td>
       <td class="thesis">${esc(r.thesis).slice(0, 60)}</td>
@@ -700,6 +757,7 @@ function writeArtifacts(runs: RunRec[], fixtures: Fixture[]) {
     近 5 场最大相似度是跨场次去重真正关心的量：连续发五场，最像的那一对有多像。<br/>
     触发 repair 的场次（只有 detail 会真的改稿）：${esc(JSON.stringify(rep.repairs))}
     <br/>被判「与历史撞车」的场次：${esc(JSON.stringify(rep.repetitive))}
+    <br/>兜底原因（兜底率高的真正看点）：${esc(JSON.stringify(rep.fallbackReasons))}
   </div>
 </section>
 

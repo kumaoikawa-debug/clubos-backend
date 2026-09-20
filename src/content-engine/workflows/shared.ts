@@ -34,6 +34,14 @@ export interface CommonPrefix {
   missing: string[];
   insight: MarketingInsight;
   direction: CreativeDirection;
+  /**
+   * 方向的来源事实：LLM 到底有没有参与、没参与是为什么。
+   *
+   * ★ 必须一路带到文档的 `generationMeta`：掉额度 / Key 失效时全线静默兜底，
+   *   请求照样 200、文档照样生成、`model` 还写着 `platform-llm`，
+   *   运维侧几乎零信号 —— 验收跑批里 30 场有 22 场兜底，就是靠等价旁证才发现的。
+   */
+  directionSource: { llmUsed: boolean; reason: string };
   vision: VisionResult[];
   photos: { id: string; src?: string }[];
   /** 本 scenario 的历史指纹（已按时间倒序），供后续 Repair / 落 fingerprint 复用 */
@@ -68,9 +76,9 @@ export async function runCommonPrefix(
   ]);
 
   const insight = await buildMarketingInsight(input.merchantId, truth, vision);
-  const directions = await generateDirections(input.merchantId, truth, insight, vision);
+  const generated = await generateDirections(input.merchantId, truth, insight, vision);
   const direction = selectDirection({
-    directions,
+    directions: generated.directions,
     truth,
     vision,
     historyTheses: history.map((f) => f.thesisText),
@@ -78,5 +86,14 @@ export async function runCommonPrefix(
     historyVectors: extractStyleVectors(history) as StyleVector[],
   });
 
-  return { truth, missing, insight, direction, vision, photos, history };
+  return {
+    truth,
+    missing,
+    insight,
+    direction,
+    directionSource: { llmUsed: generated.llmUsed, reason: generated.llmError },
+    vision,
+    photos,
+    history,
+  };
 }

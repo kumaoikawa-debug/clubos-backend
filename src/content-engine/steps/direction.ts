@@ -110,13 +110,30 @@ const DIRECTION_SYSTEM =
   '你是户外活动的创意总监。为同一场活动提出 3 个明显不同、但都站得住的创意方向。' +
   '禁止使用季节/挑战/社交/生活方式这类固定四选一标签，必须基于本场活动的真实证据提出方向。必须输出严格 JSON。';
 
-/** Step 5：生成 3 个候选方向（LLM） */
+/**
+ * 方向生成的结果。
+ *
+ * ★ 为什么要把「到底用没用上 LLM」作为返回值带出来：
+ *   掉额度 / Key 失效 / 超时时，方向会静默退化成确定性兜底 —— 请求仍然 200、
+ *   文档照样生成，`generationMeta.model` 还写着 `platform-llm`。
+ *   于是线上整月兜底，报表上一点异常都看不到，只能靠人工比对文案「怎么这么模板」。
+ *   验收跑批里 30 场有 22 场是兜底，就是这么被发现的。
+ */
+export interface DirectionsResult {
+  directions: CreativeDirection[];
+  /** 真实 LLM 是否参与了方向生成（false = 全部来自确定性兜底） */
+  llmUsed: boolean;
+  /** LLM 失败原因（仅 llmUsed=false 时有值）：积分不足 / Key 未配置 / 超时 / 供应商报错 */
+  llmError: string;
+}
+
+/** Step 5：生成 3 个候选方向（LLM，失败退化为由本场证据推出的确定性方向） */
 export async function generateDirections(
   merchantId: string,
   truth: ActivityTruth,
   insight: MarketingInsight,
   vision: VisionResult[]
-): Promise<CreativeDirection[]> {
+): Promise<DirectionsResult> {
   const material = [
     ...truth.groundedScenes.map((s) => s.value),
     ...vision.flatMap((v) => v.scene ?? []),
@@ -154,6 +171,7 @@ export async function generateDirections(
   );
 
   let raw: Partial<CreativeDirection>[] = [];
+  let llmError = '';
   try {
     const json = await callJsonLlm<{ directions?: unknown }>(merchantId, {
       system: DIRECTION_SYSTEM,
@@ -165,14 +183,45 @@ export async function generateDirections(
   } catch (err) {
     // ★ 绝不静默吞错：LLM 失败会退化成 dir-fallback-* 兜底方向，
     //   若不打日志，线上只能看到「方向很模板」而查不出是 Key 失效 / 积分不足 / 超时。
-    logger.warn(
-      `[v3/direction] LLM 生成方向失败，走确定性兜底：${err instanceof Error ? err.message : String(err)}`
-    );
+    //
+    // ★ 归一化后只留「一行有效信息」：底层抛出的常是多行 prisma / 网络堆栈，
+    //   整段塞进 generationMeta.fallbackReason 会变成一段读不了的文本
+    //   （实测开头就是个空行）。这个字段是给运维看的
+    //   （「AI 积分不足，请充值…」/「平台 LLM Key 未配置」/ 超时），不是用来读堆栈的。
+    const firstLine = String(err instanceof Error ? err.message : err)
+      .split('\n')
+      .map((s) => s.trim())
+      .find((s) => s.length > 0);
+    llmError = (firstLine || '未知原因').slice(0, 200);
+    logger.warn(`[v3/direction] LLM 生成方向失败，走确定性兜底：${llmError}`);
     raw = [];
   }
 
-  const directions = raw.map((d, i) => normalizeDirection(d, truth, insight, i));
-  return dedupeDirections(rejectUngroundedDirections(directions, truth), truth, insight);
+  const candidate = raw.map((d, i) => normalizeDirection(d, truth, insight, i));
+  const final = dedupeDirections(rejectUngroundedDirections(candidate, truth), truth, insight);
+
+  /*
+   * ★ 闸门要盖在**输出**上，而不是只盖住「LLM 那一段」。
+   *
+   * 原先只在 LLM 方向上调 rejectUngroundedDirections，兜底方向不过闸 ——
+   * 而兜底方向同样会一字不改地上屏（thesis → 公众号 opening / 详情页引用，
+   * communicationAngle → 小红书 mainAngle / 公众号 heading）。
+   * 于是线上出现了「LLM 方向被闸门拒收 → 兜底补位 → 兜底自己带无据数字 → 照样上线」，
+   * 闸门等于装了个寂寞：水流从旁边绕过去了。
+   * 修法就是这一行：出口处再过一次同一把尺子。
+   */
+  const safe = rejectUngroundedDirections(final, truth);
+  if (!safe.length) {
+    // 正常走不到：兜底文案全部由 confirmedFacts / insight 的原文拼装，天生在事实池内。
+    // 留着只为「宁可退化也不把空数组喂给 selectDirection」（selectDirection 会取 [0] 使用）。
+    logger.error('[v3/direction] 全部方向都被事实闸门拒收，退回未过滤集合（属于内部逻辑缺陷，请查兜底模板）');
+  }
+
+  return {
+    directions: safe.length ? safe : final,
+    llmUsed: raw.length > 0,
+    llmError: raw.length > 0 ? '' : llmError,
+  };
 }
 
 /**
@@ -368,6 +417,70 @@ export function evidenceStyleVector(truth: ActivityTruth): StyleVector {
 }
 
 /**
+ * 兜底方向的可上屏文案 —— 只能由「本场已有证据」拼装。
+ *
+ * ★ 三条硬规矩，都是线上踩出来的：
+ *
+ *  1. **不得含序号。** 旧模板是 `${title}的第 ${i + 1} 个角度：${whatWeSell}`，
+ *     外加 `communicationAngle: `${whatWeSell}（备用角度 ${i + 1}）``。
+ *     问题是这两个字段**不是内部字段**：
+ *       · thesis → 公众号 opening、详情页引用型 block 的 headline、小红书正文
+ *       · communicationAngle → 小红书 mainAngle、公众号 heading
+ *     于是读者真的会看到「沙漠穿越 + 洞穴探秘的第 3 个角度」——
+ *     那是写代码的人需要的信息，不是读者需要的；而且那个「3」是事实池外的
+ *     数字，会被方向级事实闸门判成编造数字（线上验收 R4b 就是这么挂的）。
+ *     序号只允许出现在 `rationale`（内部留痕，不上屏）。
+ *
+ *  2. **不得含事实池外的数字。** 切面全部取自 insight 与 confirmedFacts 的原文，
+ *     因此天然满足。任何时候都不要在这里新造数字（比如「N 大亮点」）。
+ *
+ *  3. **候选之间的差异只能来自不同切面，不能来自序号。**
+ *     切面不够就少给候选 ——「宁少不假」：下游少一个候选只是少一个选择，
+ *     把序号送上屏是事故。
+ */
+function fallbackFacets(
+  truth: ActivityTruth,
+  insight: MarketingInsight
+): { thesis: string; angle: string }[] {
+  const f = truth.confirmedFacts;
+  const title = String(f.title ?? '').trim();
+  const place = String(f.place ?? '').trim();
+  // 标题里往往已经含地点（title「白云嶂穿越 · 一日徒步」+ place「惠州 白云嶂」），
+  // 无脑拼接会得到「白云嶂穿越 · 一日徒步 · 惠州 白云嶂」这种自己重复自己的话。
+  const placeRedundant =
+    !!place && place.split(/[\s·,，/]+/).filter(Boolean).some((seg) => title.includes(seg));
+  const lead = title && place && !placeRedundant ? `${title} · ${place}` : title || place || '本场活动';
+
+  const out: { thesis: string; angle: string }[] = [];
+  const push = (v: unknown) => {
+    const angle = String(v ?? '').trim();
+    if (!angle) return;
+    const thesis = `${lead}｜${angle}`;
+    if (out.some((o) => o.thesis === thesis)) return;
+    out.push({ thesis, angle });
+  };
+  /*
+   * 顺序即优先级。★只收「能当主张读的短语」：
+   *   whatWeSell / motivation / targetAudience 是见解级短语，读起来是一句话；
+   *   insight.strongestEvidence 是**事实原句**（如「07:30 深圳北站集合出发」）——
+   *   拿它当传播主张会产出「…｜07:30 深圳北站集合出发」这种莫名其妙的东西
+   *   （第一版就这么产过，所以这里把它踢出切面表）。
+   * 事实字段（difficulty / distance / days）只在短语不足时补位：它们是值不是主张，
+   * 但读到「…｜中等」也比把序号送上屏强。
+   * 切面凑不满 3 个就少给候选 —— 宁少不假。
+   */
+  push(insight.whatWeSell);
+  push((insight.motivation ?? [])[0]);
+  push(insight.targetAudience);
+  push(f.difficulty);
+  push(f.distance);
+  push(f.days ? `${f.days} 天` : '');
+  // 一个切面都取不到时，至少给「标题（含地点）」本身 —— 它是最硬的已确认事实
+  if (!out.length) out.push({ thesis: lead, angle: lead });
+  return out.slice(0, 3);
+}
+
+/**
  * 去重：文档要求 3 个方向必须「明显不同」。
  * 同 thesis 视为重复；styleVector 距离过近也降权删除。
  */
@@ -385,9 +498,11 @@ export function dedupeDirections(
   }
   // 不足 3 个时用「本场证据推出的向量」在各量纲上展开，保证下游始终有选择空间
   const evBase = evidenceStyleVector(truth);
+  const facets = fallbackFacets(truth, insight);
   let i = 0;
-  while (kept.length < 3) {
-    const seed = truth.confirmedFacts.title ?? 'activity';
+  // ★ 上界是 facets.length，不是硬编码 3：候选之间的差异只能来自不同切面。
+  //   见 fallbackFacets 注释 —— 用序号硬凑第 3 个候选，就是把序号送上屏。
+  while (kept.length < 3 && i < facets.length) {
     const jitter = (base: number, step: number) =>
       clamp01(base + (i % 2 === 0 ? step : -step * 0.6));
     const base = kept[0]?.styleVector ?? evBase;
@@ -397,22 +512,23 @@ export function dedupeDirections(
       aspirationLevel: jitter(base.aspirationLevel, 0.2 + i * 0.08),
       socialEnergy: jitter(base.socialEnergy, 0.18 + i * 0.08),
       // i=0 的节奏/留白保持证据取值（它被 selectDirection 选中的概率最高）；
-      // i>0 才在节奏上做展开，保证 3 个候选之间也互不重复。
+      // i>0 才在节奏上做展开，保证候选之间也互不重复。
       rhythm: i === 0 ? base.rhythm : (['slow', 'medium', 'fast'] as const)[i % 3],
       whitespace: i === 0 ? base.whitespace : (['tight', 'balanced', 'generous'] as const)[i % 3],
     });
     kept.push({
       id: `dir-fallback-${i + 1}`,
-      thesis: `${String(seed)}的第 ${i + 1} 个角度：${insight.whatWeSell}`,
+      thesis: facets[i].thesis,
       targetAudience: insight.targetAudience,
       primaryMotivation: insight.motivation?.[0] ?? '',
       primaryBarrier: insight.barrier,
-      communicationAngle: `${insight.whatWeSell}（备用角度 ${i + 1}）`,
+      communicationAngle: facets[i].angle,
       evidenceRefs: insight.strongestEvidence.slice(0, 3),
       narrativeStrategy: ['建立参照', '展开证据', '落到行动'],
       styleVector: v,
       expectedVisualStrategy: '按 StyleVector 执行',
-      rationale: 'LLM 方向不足时的确定性补齐',
+      // 序号只允许出现在这里：rationale 是内部留痕，不上屏。
+      rationale: `LLM 方向不足时的确定性补齐（内部序号 ${i + 1}）`,
     });
     i++;
   }
