@@ -16,9 +16,10 @@
 import type { ActivityTruth } from '../contracts/activityTruth';
 import type { PromoDocument } from '../contracts/promoDocument';
 import { buildCreativeFingerprint, type CreativeFingerprint } from '../contracts/fingerprints';
+import { embedText } from '../contracts/semantic';
 import { buildBlueprint, writeBlocks, matchPhotos, composeLayout } from '../steps/compose';
 import { runCommonPrefix } from './shared';
-import { groundClaims, evaluateSimilarity, repairDocument } from '../steps/quality';
+import { groundClaims, evaluateSimilarity, repairDocument, type SimilarityReport } from '../steps/quality';
 import { saveContentDocument, appendCreativeMemory } from '../storage/repo';
 
 export const WORKFLOW_VERSION = 'v3.0-detail';
@@ -36,7 +37,7 @@ export interface DetailWorkflowResult {
   truth: ActivityTruth;
   missing: string[];
   document: PromoDocument;
-  evaluation: ReturnType<typeof evaluateSimilarity>;
+  evaluation: SimilarityReport;
 }
 
 /** 主管道 —— 纯业务逻辑，可离线单测（不含 Mastra） */
@@ -73,7 +74,7 @@ export async function runDetailPipeline(
   const grounded = groundClaims(blocks, truth);
   blocks = grounded.blocks;
 
-  const evaluation = evaluateSimilarity(
+  const evaluation = await evaluateSimilarity(
     { thesisText: direction.thesis, openingMode: blueprint.openingMode, blocks },
     historyMemory
   );
@@ -99,12 +100,15 @@ export async function runDetailPipeline(
     repairs = repaired.repairCount;
   }
 
+  const thesisVec = await embedText(direction.thesis);
   const fingerprint: CreativeFingerprint = buildCreativeFingerprint({
     thesisText: direction.thesis,
     openingMode: blueprint.openingMode,
     blocks,
     // 带上 StyleVector：跨场次去重要比「用什么调性说的」，不能只比文案
     styleVector: direction.styleVector,
+    // 带上 thesis 的语义向量：§八 第 2 层 Semantic Similarity 的真实载体，落库进 CreativeMemory
+    ...(thesisVec ? { thesisEmbedding: thesisVec } : {}),
   });
 
   const document: PromoDocument = {

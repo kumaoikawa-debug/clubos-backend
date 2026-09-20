@@ -49,6 +49,12 @@ export interface FingerprintInput {
   blocks?: ContentBlock[];
   scenario?: PromoScenario;
   styleVector?: StyleVector;
+  /**
+   * v3.2 新增：thesis 的语义 embedding 向量（§八 第 2 层 Semantic Similarity 的真实载体）。
+   * 由生成阶段调用 embedText 填充，落库进 CreativeMemory；相似度比较时直接复用，
+   * 不再现场重算。无 embedding 能力（离线 / 无 Key）时为 undefined，比较降级到 bigram。
+   */
+  thesisEmbedding?: number[];
 }
 
 function round(n: number, p = 3): number {
@@ -79,6 +85,7 @@ export function buildCreativeFingerprint(input: FingerprintInput): CreativeFinge
   return {
     thesisText: input.thesisText ?? '',
     ...(input.styleVector ? { styleVector: input.styleVector } : {}),
+    ...(input.thesisEmbedding ? { thesisEmbedding: input.thesisEmbedding } : {}),
     titlePattern: input.titlePattern ?? '',
     openingMode: input.openingMode ?? '',
     blockPurposeSequence: blocks.map((b) => b.purpose || b.type),
@@ -219,4 +226,25 @@ function densityDistance(x: readonly number[], y: readonly number[]): number {
   let sum = 0;
   for (let i = 0; i < n; i++) sum += Math.abs(x[i] - y[i]);
   return 1 - Math.min(1, sum / n);
+}
+
+/**
+ * 文案层第 1 层快速过滤：bigram Jaccard（文档 §八 允许 n-gram 作为第一层）。
+ * 同时作为「语义层拿不到 embedding」时的确定性降级（离线 / 无 Key / 配额耗尽）。
+ * 从 steps/quality.ts 迁来，作为指纹基元供 steps/quality 与 contracts/semantic 共用，
+ * 避免 semantic ↔ quality 之间的循环依赖。
+ */
+export function copySimilarity(a: string, b: string): number {
+  const gram = (s: string) => {
+    const t = String(s ?? '').replace(/[\s，。、,.!！?？:：;；"'"'()（）]/g, '');
+    const set = new Set<string>();
+    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
+    return set;
+  };
+  const x = gram(a);
+  const y = gram(b);
+  if (!x.size || !y.size) return 0;
+  let inter = 0;
+  x.forEach((v) => y.has(v) && inter++);
+  return inter / (x.size + y.size - inter);
 }

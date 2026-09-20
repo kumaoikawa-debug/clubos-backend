@@ -10,6 +10,7 @@
 
 import type { WechatDocument } from '../contracts/channels';
 import { buildCreativeFingerprint, sectionsAsBlocks } from '../contracts/fingerprints';
+import { embedText } from '../contracts/semantic';
 import { evaluateSimilarity } from '../steps/quality';
 import {
   buildWechatBlueprint,
@@ -61,13 +62,15 @@ export async function runWechatPipeline(input: CommonInput): Promise<WechatResul
       text: (s.paragraphs || []).join(''),
     }))
   );
+  const thesisVec = await embedText(common.direction.thesis);
   const fingerprint = buildCreativeFingerprint({
     thesisText: common.direction.thesis,
     openingMode: blueprint.opening,
     blocks: structuralBlocks,
     styleVector: common.direction.styleVector,
+    ...(thesisVec ? { thesisEmbedding: thesisVec } : {}),
   });
-  const evaluation = evaluateSimilarity(
+  const evaluation = await evaluateSimilarity(
     { thesisText: common.direction.thesis, openingMode: blueprint.opening, blocks: structuralBlocks },
     common.history
   );

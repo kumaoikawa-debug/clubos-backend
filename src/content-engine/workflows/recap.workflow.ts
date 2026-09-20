@@ -11,6 +11,7 @@
 
 import type { ActualActivityData, RecapDocument } from '../contracts/channels';
 import { buildCreativeFingerprint, sectionsAsBlocks } from '../contracts/fingerprints';
+import { embedText } from '../contracts/semantic';
 import { evaluateSimilarity } from '../steps/quality';
 import { buildRecapInsight, writeRecapSections } from '../steps/channels';
 import { renderWechatHtml } from '../renderers/wechatHtml';
@@ -78,13 +79,16 @@ export async function runRecapPipeline(input: RecapInput): Promise<RecapResult> 
       text: (s.paragraphs || []).join(''),
     }))
   );
+  const recapThesis = insight.coreMemory || common.direction.thesis;
+  const thesisVec = await embedText(recapThesis);
   const fingerprint = buildCreativeFingerprint({
-    thesisText: insight.coreMemory || common.direction.thesis,
+    thesisText: recapThesis,
     openingMode: 'actual-core-memory',
     blocks: structuralBlocks,
     styleVector: common.direction.styleVector,
+    ...(thesisVec ? { thesisEmbedding: thesisVec } : {}),
   });
-  const evaluation = evaluateSimilarity(
+  const evaluation = await evaluateSimilarity(
     { thesisText: insight.coreMemory, openingMode: 'actual-core-memory', blocks: structuralBlocks },
     common.history
   );

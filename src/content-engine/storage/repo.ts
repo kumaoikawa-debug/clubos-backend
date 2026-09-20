@@ -67,6 +67,28 @@ export async function saveContentDocument(input: SaveDocumentInput) {
   });
 }
 
+/** 编辑器变更新：在已生成的文档上做局部改写并落库（文档 §十八） */
+export async function updateContentDocument(
+  id: string | number | bigint,
+  merchantId: string | number | bigint,
+  data: {
+    document: AnyV3Document | Record<string, unknown>;
+    direction?: CreativeDirection;
+    fingerprint?: CreativeFingerprint | null;
+    evaluation?: unknown;
+  }
+) {
+  return prisma.contentDocument.update({
+    where: { id: toBigInt(id), merchantId: toBigInt(merchantId) },
+    data: {
+      document: data.document as unknown as object,
+      ...(data.direction ? { direction: data.direction as unknown as object } : {}),
+      ...(data.fingerprint !== undefined ? { fingerprint: (data.fingerprint ?? null) as unknown as object } : {}),
+      ...(data.evaluation !== undefined ? { evaluation: (data.evaluation ?? null) as unknown as object } : {}),
+    },
+  });
+}
+
 export async function appendCreativeMemory(
   merchantId: string | number | bigint,
   scenario: Scenario,

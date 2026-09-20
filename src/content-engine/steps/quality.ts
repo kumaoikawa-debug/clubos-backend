@@ -13,8 +13,14 @@ import {
   buildCreativeFingerprint,
   structureSimilarity,
   visualSimilarity,
+  copySimilarity,
   type CreativeFingerprint,
 } from '../contracts/fingerprints';
+import { semanticSimilarity, embedText } from '../contracts/semantic';
+
+// 保留公开 API：copySimilarity 已迁至 contracts/fingerprints（语义相似度的第 1 层 + 降级），
+// 重新导出以免 tools/v3-audit.ts 等调用方改动。
+export { copySimilarity };
 
 /** 文档 §22 明令禁止出现在兜底文案里的套话 */
 export const BANNED_PHRASES = [
@@ -135,21 +141,28 @@ export function groundClaims(
 export interface SimilarityReport {
   structure: number;
   visual: number;
-  /** 0~1，当前实现是 bigram 近似；语义层须接 embedding 或 LLM judge */
+  /** 第 1 层：bigram n-gram 近似（离线 / 无 embedding 时的语义代理） */
   copy: number;
+  /**
+   * 第 2 层：真实语义相似度（embedding 余弦）。
+   * 无 embedding 能力时等于 `copy`（降级），此时 `semanticAvailable=false`。
+   */
+  semantic: number;
+  /** 本轮比较是否真的走了 embedding（false = 全部降级到 bigram） */
+  semanticAvailable: boolean;
   tooRepetitive: boolean;
   comparedWith: number;
 }
 
 /** Step 12：与本商户最近同类内容比较 */
-export function evaluateSimilarity(
+export async function evaluateSimilarity(
   currentDoc: {
     thesisText: string;
     openingMode: string;
     blocks: ContentBlock[];
   },
   history: CreativeFingerprint[]
-): SimilarityReport {
+): Promise<SimilarityReport> {
   const current = buildCreativeFingerprint({
     thesisText: currentDoc.thesisText,
     openingMode: currentDoc.openingMode,
@@ -160,38 +173,40 @@ export function evaluateSimilarity(
   let maxStruct = 0;
   let maxVisual = 0;
   let maxCopy = 0;
+  let maxSem = 0;
+  let semAvailable = false;
+
+  // 当前 thesis 只 embed 一次（命中缓存时免费），与历史指纹里的 thesisEmbedding 复用
+  const curVec = await embedText(currentDoc.thesisText);
   for (const h of recent) {
     maxStruct = Math.max(maxStruct, structureSimilarity(current, h));
     maxVisual = Math.max(maxVisual, visualSimilarity(current, h));
-    maxCopy = Math.max(maxCopy, copySimilarity(current.thesisText, h.thesisText));
+    const copy = copySimilarity(current.thesisText, h.thesisText);
+    maxCopy = Math.max(maxCopy, copy);
+    const sem = await semanticSimilarity(
+      current.thesisText,
+      h.thesisText,
+      curVec,
+      h.thesisEmbedding ?? null
+    );
+    if (curVec && h.thesisEmbedding) semAvailable = true;
+    maxSem = Math.max(maxSem, sem);
   }
 
-  // 文档默认策略：Semantic 高 且（Structure 或 Visual 也高）→ 触发 Repair
-  const semanticHigh = maxCopy >= 0.7;
+  // 文档默认策略：Semantic 高 且（Structure 或 Visual 也高）→ 触发 Repair。
+  // 语义层可用时以真实 cosine 为准（阈值偏高，余弦分布稠密）；
+  // 不可用时退回 bigram 阈值（与旧实现行为一致，保证离线契约判据不漂移）。
+  const semanticHigh = semAvailable ? maxSem >= 0.82 : maxCopy >= 0.7;
   const structOrVisualHigh = maxStruct >= 0.8 || maxVisual >= 0.8;
   return {
     structure: maxStruct,
     visual: maxVisual,
     copy: maxCopy,
+    semantic: maxSem,
+    semanticAvailable: semAvailable,
     tooRepetitive: semanticHigh && structOrVisualHigh,
     comparedWith: recent.length,
   };
-}
-
-/** 文案层第一层快速过滤：bigram Jaccard（文档允许 n-gram 作为第一层） */
-export function copySimilarity(a: string, b: string): number {
-  const gram = (s: string) => {
-    const t = String(s ?? '').replace(/[\s，。、,.!！?？:：;；"'"'()（）]/g, '');
-    const set = new Set<string>();
-    for (let i = 0; i < t.length - 1; i++) set.add(t.slice(i, i + 2));
-    return set;
-  };
-  const x = gram(a);
-  const y = gram(b);
-  if (!x.size || !y.size) return 0;
-  let inter = 0;
-  x.forEach((v) => y.has(v) && inter++);
-  return inter / (x.size + y.size - inter);
 }
 
 /**

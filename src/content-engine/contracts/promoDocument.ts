@@ -88,6 +88,12 @@ export interface GenerationMeta {
   llmUsed?: boolean;
   /** 兜底原因（仅 llmUsed=false 时存在）：积分不足 / 平台 Key 未配置 / 超时 / 供应商报错 */
   fallbackReason?: string;
+  /**
+   * 编辑器变更新操作记录（文档 §十八）：regenerate-style / regenerate-layout /
+   * rewrite-block / replace-image。原 generation 的 llmUsed/fallbackReason 不改变，
+   * 这里只追加「最近一次被编辑器改过什么」，便于前端与审计追溯。
+   */
+  editorAction?: string;
 }
 
 export interface PromoDocument {

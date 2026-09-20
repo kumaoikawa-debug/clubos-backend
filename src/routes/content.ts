@@ -130,6 +130,183 @@ router.post(
 router.post('/recap/generate', makeChannelHandler('recap', RecapSchema, (i) => runRecapPipeline(i)));
 
 /**
+ * ★ 编辑器变更新端点（文档 §十八）
+ * 作用在「已生成的 detail 文档」上，对应前端块编辑器的四个动作：
+ *   regenerate-style / regenerate-layout / rewrite-block / replace-image。
+ * 先按 id 取文档（校验 merchant 归属 + 必须是 blocks 型 detail 文档），再局部变换并落库。
+ */
+
+import {
+  regenerateStyle,
+  regenerateLayout,
+  rewriteBlock,
+  replaceImage,
+  type StyleBias,
+  type LayoutMode,
+} from '../content-engine/steps/editor';
+import { updateContentDocument } from '../content-engine/storage/repo';
+
+const EditorStyleSchema = z.object({ bias: z.enum(['magazine', 'visual', 'professional', 'natural']).optional() });
+const EditorLayoutSchema = z.object({ mode: z.enum(['airy', 'dense', 'rhythmic']).optional() });
+const EditorRewriteSchema = z.object({
+  blockId: z.string().min(1, 'blockId 必填'),
+  instruction: z.string().max(300).optional(),
+});
+const EditorImageSchema = z.object({
+  blockId: z.string().min(1, 'blockId 必填'),
+  photoId: z.string().min(1, 'photoId 必填'),
+  photoSrc: z.string().max(300).optional(),
+});
+
+/** 按 id 取 detail 文档（带 merchant 归属校验）。返回 null 时已写过响应。 */
+async function loadDetailDoc(req: any, res: Response): Promise<{ doc: any; truth: any } | null> {
+  const merchantId = Number(req.admin?.sub);
+  if (!merchantId) {
+    res.status(401).json(fail('未登录'));
+    return null;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json(fail('id 不合法'));
+    return null;
+  }
+  try {
+    const { prisma } = await import('../lib');
+    const row = await prisma.contentDocument.findFirst({
+      where: { id: BigInt(id), merchantId: BigInt(merchantId) },
+    });
+    if (!row) {
+      res.status(404).json(fail('文档不存在'));
+      return null;
+    }
+    const doc = row.document as unknown as Record<string, any>;
+    const truth = row.truthSnapshot as unknown as Record<string, any>;
+    if (!Array.isArray(doc?.blocks)) {
+      res.status(400).json(fail('该端点仅支持 detail（blocks）文档'));
+      return null;
+    }
+    return { doc, truth };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json(fail('读取失败：' + msg));
+    return null;
+  }
+}
+
+/** 应用编辑器结果并落库，返回统一响应 */
+async function saveEditorResult(
+  req: any,
+  res: Response,
+  doc: any,
+  truth: any,
+  result: { document: any; action: string; llmUsed: boolean; fallbackReason?: string; evaluation?: unknown }
+) {
+  const merchantId = Number(req.admin?.sub);
+  const id = Number(req.params.id);
+  try {
+    await updateContentDocument(id, merchantId, {
+      document: result.document,
+      direction: result.document.direction,
+      fingerprint: result.document.fingerprint,
+      evaluation: result.evaluation,
+    });
+    res.json(
+      ok({
+        id,
+        document: result.document,
+        editorAction: result.action,
+        llmUsed: result.llmUsed,
+        ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
+      })
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json(fail('保存失败：' + msg));
+  }
+}
+
+router.post('/:id/regenerate-style', async (req, res: Response) => {
+  const parsed = EditorStyleSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(zodMessage(parsed.error)));
+    return;
+  }
+  const loaded = await loadDetailDoc(req, res);
+  if (!loaded) return;
+  try {
+    const result = await regenerateStyle(loaded.doc, loaded.truth, Number(req.admin?.sub), parsed.data.bias as StyleBias);
+    await saveEditorResult(req, res, loaded.doc, loaded.truth, result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json(fail('换风格失败：' + msg));
+  }
+});
+
+router.post('/:id/regenerate-layout', async (req, res: Response) => {
+  const parsed = EditorLayoutSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(zodMessage(parsed.error)));
+    return;
+  }
+  const loaded = await loadDetailDoc(req, res);
+  if (!loaded) return;
+  try {
+    const result = await regenerateLayout(loaded.doc, loaded.truth, Number(req.admin?.sub), parsed.data.mode as LayoutMode);
+    await saveEditorResult(req, res, loaded.doc, loaded.truth, result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json(fail('换版式失败：' + msg));
+  }
+});
+
+router.post('/:id/rewrite-block', async (req, res: Response) => {
+  const parsed = EditorRewriteSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(zodMessage(parsed.error)));
+    return;
+  }
+  const loaded = await loadDetailDoc(req, res);
+  if (!loaded) return;
+  try {
+    const result = await rewriteBlock(
+      loaded.doc,
+      loaded.truth,
+      Number(req.admin?.sub),
+      parsed.data.blockId,
+      parsed.data.instruction
+    );
+    await saveEditorResult(req, res, loaded.doc, loaded.truth, result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json(fail('改写块失败：' + msg));
+  }
+});
+
+router.post('/:id/replace-image', async (req, res: Response) => {
+  const parsed = EditorImageSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(zodMessage(parsed.error)));
+    return;
+  }
+  const loaded = await loadDetailDoc(req, res);
+  if (!loaded) return;
+  try {
+    const result = await replaceImage(
+      loaded.doc,
+      loaded.truth,
+      Number(req.admin?.sub),
+      parsed.data.blockId,
+      parsed.data.photoId,
+      parsed.data.photoSrc
+    );
+    await saveEditorResult(req, res, loaded.doc, loaded.truth, result);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(400).json(fail('换图失败：' + msg));
+  }
+});
+
+/**
  * GET /api/content/activity/:activityId?scenario=detail
  * ★ 必须真的按 activityId 过滤 —— 早期版本忽略路径参数、永远返回最新一篇，
  *   导致「A 活动打开看到 B 活动的内容」。
