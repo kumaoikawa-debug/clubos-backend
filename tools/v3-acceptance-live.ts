@@ -653,6 +653,11 @@ function writeArtifacts(runs: RunRec[], fixtures: Fixture[]) {
           model: r.model,
           repairCount: r.repairCount,
           usedLlm: r.usedLlm,
+          // ★ 逐场也留原因：只有聚合没有逐场，事后复盘就没法定位
+          //   「哪几场兜底、是不是同一类原因、从第几场开始崩」。
+          fallbackReason: r.fallbackReason,
+          // 「像历史」≠「改过一次」：撞车信号同样要落到逐场，否则复盘时只剩聚合
+          repetitive: Boolean(r.doc?.generationMeta?.repetitive),
           truthDrift: r.truthDrift,
           banned: r.banned,
           numbers: r.numbers,
