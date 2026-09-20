@@ -4,8 +4,9 @@ FROM node:20-alpine
 WORKDIR /app
 
 # 依赖（含 dev，因构建需要 prisma CLI / typescript）
+# 注意 --include=dev：Render 会注入 NODE_ENV=production，裸 npm ci 会跳过 devDeps 导致 tsc/prisma 缺失、构建失败
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --include=dev
 
 # Prisma Client 生成 + 源码构建
 COPY prisma ./prisma
