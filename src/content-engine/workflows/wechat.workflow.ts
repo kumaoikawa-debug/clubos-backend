@@ -24,6 +24,8 @@ import { runCommonPrefix, type CommonInput } from './shared';
 export const WORKFLOW_VERSION = 'v3.0-wechat';
 
 export interface WechatResult {
+  /** 落库后的 ContentDocument id（DB 不可用时为 null） */
+  id: string | null;
   document: WechatDocument;
   fromLlm: boolean;
   missing: string[];
@@ -98,8 +100,9 @@ export async function runWechatPipeline(input: CommonInput): Promise<WechatResul
     },
   };
 
+  let documentId: string | null = null;
   try {
-    await saveContentDocument({
+    const saved = await saveContentDocument({
       merchantId: input.merchantId,
       activityId: input.activityId,
       scenario: 'wechat',
@@ -109,12 +112,14 @@ export async function runWechatPipeline(input: CommonInput): Promise<WechatResul
       fingerprint,
       evaluation,
     });
+    documentId = saved && saved.id != null ? String(saved.id) : null;
     await appendCreativeMemory(input.merchantId, 'wechat', fingerprint, input.activityId);
   } catch {
     /* DB 不可用时静默 */
   }
 
   return {
+    id: documentId,
     document,
     fromLlm: true,
     missing: common.missing,

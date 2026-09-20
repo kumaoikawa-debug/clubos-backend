@@ -339,7 +339,17 @@ router.get('/activity/:activityId', async (req, res: Response) => {
       res.status(404).json(fail('暂无 V3 内容文档'));
       return;
     }
-    res.json(ok(doc));
+    /* ★ 不能直接 ok(doc)：Prisma 的 BigInt 主键进 JSON.stringify 会抛
+       「Do not know how to serialize a BigInt」→ 整个端点 500。
+       显式投影并转字符串，前端才能拿到 id 去调 /:id/publish 与编辑器端点。 */
+    res.json(ok({
+      id: String(doc.id),
+      scenario: doc.scenario,
+      status: doc.status,
+      createdAt: doc.createdAt,
+      publishedAt: doc.publishedAt ?? null,
+      document: doc.document,
+    }));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json(fail('读取失败：' + msg));

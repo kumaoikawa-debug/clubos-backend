@@ -34,6 +34,9 @@ export interface DetailWorkflowInput {
 }
 
 export interface DetailWorkflowResult {
+  /** 落库后的 ContentDocument id —— 前端据此调用 §十八 编辑器端点与 §二十四 发布埋点。
+   *  DB 不可用（生成不落库）时为 null，此时前端应提示而非静默禁用。 */
+  id: string | null;
   truth: ActivityTruth;
   missing: string[];
   document: PromoDocument;
@@ -131,8 +134,9 @@ export async function runDetailPipeline(
   };
 
   // Step 14 persist（失败不阻断返回 —— DB 未就绪时仍要能生成）
+  let documentId: string | null = null;
   try {
-    await saveContentDocument({
+    const saved = await saveContentDocument({
       merchantId: input.merchantId,
       activityId: input.activityId,
       scenario: 'detail',
@@ -142,12 +146,13 @@ export async function runDetailPipeline(
       fingerprint,
       evaluation,
     });
+    documentId = saved && saved.id != null ? String(saved.id) : null;
     await appendCreativeMemory(input.merchantId, 'detail', fingerprint, input.activityId);
   } catch {
-    /* DB 不可用时静默：内容仍返回给调用方 */
+    /* DB 不可用时静默：内容仍返回给调用方（id 保持 null，前端据此提示） */
   }
 
-  return { truth, missing, document, evaluation };
+  return { id: documentId, truth, missing, document, evaluation };
 }
 
 /* 历史读取已上移到 workflows/shared.ts 的 runCommonPrefix（按 scenario 隔离 + 带 StyleVector），

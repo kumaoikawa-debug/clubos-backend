@@ -25,6 +25,8 @@ export interface RecapInput extends CommonInput {
 }
 
 export interface RecapResult {
+  /** 落库后的 ContentDocument id（DB 不可用时为 null） */
+  id: string | null;
   document: RecapDocument;
   missing: string[];
   /** 没有现场素材时为真 —— 此时产出的是诚实空态，不是编出来的回顾 */
@@ -115,8 +117,9 @@ export async function runRecapPipeline(input: RecapInput): Promise<RecapResult> 
     },
   };
 
+  let documentId: string | null = null;
   try {
-    await saveContentDocument({
+    const saved = await saveContentDocument({
       merchantId: input.merchantId,
       activityId: input.activityId,
       scenario: 'recap',
@@ -126,10 +129,11 @@ export async function runRecapPipeline(input: RecapInput): Promise<RecapResult> 
       fingerprint,
       evaluation,
     });
+    documentId = saved && saved.id != null ? String(saved.id) : null;
     await appendCreativeMemory(input.merchantId, 'recap', fingerprint, input.activityId);
   } catch {
     /* DB 不可用时静默 */
   }
 
-  return { document, missing: common.missing, emptyInsight: !insight.coreMemory };
+  return { id: documentId, document, missing: common.missing, emptyInsight: !insight.coreMemory };
 }

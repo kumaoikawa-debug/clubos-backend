@@ -19,6 +19,8 @@ import { runCommonPrefix, type CommonInput } from './shared';
 export const WORKFLOW_VERSION = 'v3.0-xiaohongshu';
 
 export interface XhsResult {
+  /** 落库后的 ContentDocument id（DB 不可用时为 null） */
+  id: string | null;
   document: XiaohongshuDocument;
   missing: string[];
 }
@@ -81,8 +83,9 @@ export async function runXiaohongshuPipeline(input: CommonInput): Promise<XhsRes
     },
   };
 
+  let documentId: string | null = null;
   try {
-    await saveContentDocument({
+    const saved = await saveContentDocument({
       merchantId: input.merchantId,
       activityId: input.activityId,
       scenario: 'xiaohongshu',
@@ -92,10 +95,11 @@ export async function runXiaohongshuPipeline(input: CommonInput): Promise<XhsRes
       fingerprint,
       evaluation,
     });
+    documentId = saved && saved.id != null ? String(saved.id) : null;
     await appendCreativeMemory(input.merchantId, 'xiaohongshu', fingerprint, input.activityId);
   } catch {
     /* DB 不可用时静默 */
   }
 
-  return { document, missing: common.missing };
+  return { id: documentId, document, missing: common.missing };
 }
