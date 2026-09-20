@@ -15,8 +15,13 @@ const loginSchema = z.object({
 /**
  * POST /api/pay/admin/login · 管理端登录，换取 JWT
  * demo 用统一口令 ADMIN_CODE；生产应替换为 OAuth / 密码哈希。
+ *
+ * ★路径说明：本路由挂在 `/api/pay` 下，规范路径是 `/api/pay/admin/login`
+ *   （README / DEPLOY.md / 前端 core.js#ensureBackendToken / 本地联调 harness 均按此写）。
+ *   此前只注册了 `/login`，导致前端一律 401 → 拿不到 JWT → 所有 AI 调用静默回退直连。
+ *   现同时注册 `/admin/login`（规范）与 `/login`（历史别名），两者行为一致。
  */
-router.post('/login', async (req, res) => {
+router.post(['/admin/login', '/login'], async (req, res) => {
   // 兼容前端两种字段名：规范为 code，旧版曾发 adminCode（v139 前端已统一为 code）
   const body = { ...req.body };
   if (!body.code && body.adminCode) body.code = body.adminCode;
