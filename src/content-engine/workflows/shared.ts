@@ -22,7 +22,8 @@ import {
   selectDirection,
   type MarketingInsight,
 } from '../steps/direction';
-import { listRecentFingerprints, type Scenario } from '../storage/repo';
+import { listRecentFingerprints, getBrandProfile, type Scenario } from '../storage/repo';
+import type { BrandProfile } from '../contracts/brandProfile';
 
 export interface CommonInput extends RawActivityInput {
   merchantId: string;
@@ -61,6 +62,19 @@ export async function loadHistory(
   }
 }
 
+/**
+ * 读取某商户品牌档案（文档 §十三）。
+ * DB 不可用 / 未设置 → 返回 null，上层用中性默认品牌语言，
+ * 绝不默认所有俱乐部都是「年轻、松弛、山系高级感」。
+ */
+export async function loadBrandProfile(merchantId: string): Promise<BrandProfile | null> {
+  try {
+    return await getBrandProfile(merchantId);
+  } catch {
+    return null;
+  }
+}
+
 export async function runCommonPrefix(
   input: CommonInput,
   scenario: Scenario
@@ -70,13 +84,15 @@ export async function runCommonPrefix(
   const missing = missingFacts(truth);
   const photos = Array.isArray(normalized.photos) ? normalized.photos : [];
 
-  const [vision, history] = await Promise.all([
+  const [vision, history, brand] = await Promise.all([
     analyzeMedia(input.merchantId, photos),
     loadHistory(input.merchantId, scenario),
+    loadBrandProfile(input.merchantId),
   ]);
 
   const insight = await buildMarketingInsight(input.merchantId, truth, vision);
-  const generated = await generateDirections(input.merchantId, truth, insight, vision);
+  // ★ brand 为 null 时走中性默认品牌语言（§十三），不注入任何具体调性
+  const generated = await generateDirections(input.merchantId, truth, insight, vision, brand);
   const direction = selectDirection({
     directions: generated.directions,
     truth,

@@ -10,6 +10,7 @@ import type { CreativeDirection } from '../contracts/creativeDirection';
 import type { PromoDocument } from '../contracts/promoDocument';
 import type { ActivityTruth } from '../contracts/activityTruth';
 import type { WechatDocument, XiaohongshuDocument, RecapDocument } from '../contracts/channels';
+import type { BrandProfile } from '../contracts/brandProfile';
 
 /** V3 四个 scenario 的文档都可入库 —— document 列是 Json，落库不看具体形状 */
 export type AnyV3Document =
@@ -143,4 +144,126 @@ export async function getLatestDocument(
     ];
   }
   return prisma.contentDocument.findFirst({ where, orderBy: { createdAt: 'desc' } });
+}
+
+/**
+ * 文档 §二十四：拉取用于质量指标计算的文档（按 createdAt 倒序，最新在前）。
+ * 只 select 指标需要的列，不把整表 JSON 都捞出来。
+ */
+export async function listDocumentsForMetrics(
+  merchantId: string | number | bigint,
+  scenario?: string | null,
+  limit = 50
+) {
+  return prisma.contentDocument.findMany({
+    where: {
+      merchantId: toBigInt(merchantId),
+      ...(scenario ? { scenario } : {}),
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+    select: {
+      id: true,
+      scenario: true,
+      status: true,
+      createdAt: true,
+      publishedAt: true,
+      truthSnapshot: true,
+      document: true,
+      fingerprint: true,
+    },
+  });
+}
+
+/** 文档 §二十四：标记发布（Time-to-Publish 的时间基准点） */
+export async function publishContentDocument(
+  id: string | number | bigint,
+  merchantId: string | number | bigint
+) {
+  return prisma.contentDocument.update({
+    where: { id: toBigInt(id), merchantId: toBigInt(merchantId) },
+    data: { status: 'published', publishedAt: new Date() },
+  });
+}
+
+/**
+ * 读取某商户的品牌档案（文档 §十三）。
+ * 未设置时返回 null —— 调用方应据此回落到中性默认品牌语言，
+ * 绝不把 BrandProfile 当成「所有俱乐部都是年轻/松弛/山系高级感」。
+ */
+export async function getBrandProfile(
+  merchantId: string | number | bigint
+): Promise<BrandProfile | null> {
+  const row = await prisma.brandProfile.findUnique({
+    where: { merchantId: toBigInt(merchantId) },
+  });
+  if (!row) return null;
+  return {
+    merchantId: String(row.merchantId),
+    brandName: row.brandName,
+    toneKeywords: row.toneKeywords ?? [],
+    avoidKeywords: row.avoidKeywords ?? [],
+    visualKeywords: row.visualKeywords ?? [],
+    primaryColor: row.primaryColor,
+    secondaryColor: row.secondaryColor,
+    typographyPreference: row.typographyPreference,
+    logo: row.logo,
+    contentRules: row.contentRules,
+  };
+}
+
+/** 新建或更新某商户的品牌档案（文档 §十三） */
+export async function upsertBrandProfile(
+  merchantId: string | number | bigint,
+  input: {
+    brandName?: string | null;
+    toneKeywords?: string[];
+    avoidKeywords?: string[];
+    visualKeywords?: string[];
+    primaryColor?: string | null;
+    secondaryColor?: string | null;
+    typographyPreference?: string | null;
+    logo?: string | null;
+    contentRules?: string | null;
+  }
+): Promise<BrandProfile> {
+  const mid = toBigInt(merchantId);
+  const row = await prisma.brandProfile.upsert({
+    where: { merchantId: mid },
+    create: {
+      merchantId: mid,
+      brandName: input.brandName ?? null,
+      toneKeywords: input.toneKeywords ?? [],
+      avoidKeywords: input.avoidKeywords ?? [],
+      visualKeywords: input.visualKeywords ?? [],
+      primaryColor: input.primaryColor ?? null,
+      secondaryColor: input.secondaryColor ?? null,
+      typographyPreference: input.typographyPreference ?? null,
+      logo: input.logo ?? null,
+      contentRules: input.contentRules ?? null,
+    },
+    update: {
+      brandName: input.brandName ?? null,
+      toneKeywords: input.toneKeywords ?? [],
+      avoidKeywords: input.avoidKeywords ?? [],
+      visualKeywords: input.visualKeywords ?? [],
+      primaryColor: input.primaryColor ?? null,
+      secondaryColor: input.secondaryColor ?? null,
+      typographyPreference: input.typographyPreference ?? null,
+      logo: input.logo ?? null,
+      contentRules: input.contentRules ?? null,
+    },
+  });
+  return {
+    merchantId: String(row.merchantId),
+    brandName: row.brandName,
+    toneKeywords: row.toneKeywords ?? [],
+    avoidKeywords: row.avoidKeywords ?? [],
+    visualKeywords: row.visualKeywords ?? [],
+    primaryColor: row.primaryColor,
+    secondaryColor: row.secondaryColor,
+    typographyPreference: row.typographyPreference,
+    logo: row.logo,
+    contentRules: row.contentRules,
+  };
 }

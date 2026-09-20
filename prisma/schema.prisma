@@ -39,6 +39,7 @@ model Merchant {
   commissionLedgers MallCommissionLedger[]
   aiCredit     AiCreditAccount?
   aiCreditLedger AiCreditLedger[]
+  brandProfile BrandProfile?
 
   @@index([plan, status])
   @@map("merchants")
@@ -387,6 +388,9 @@ model ContentDocument {
   document      Json
   fingerprint   Json?
   evaluation    Json?
+  /// 文档 §二十四 Time-to-Publish：老板丢资料到可发布的时间。
+  /// 发布时写入，未发布为 NULL（指标计算只统计已发布文档）。
+  publishedAt DateTime? @map("published_at")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -408,4 +412,29 @@ model CreativeMemory {
 
   @@index([merchantId, scenario, createdAt])
   @@map("creative_memory")
+}
+
+/// Content Engine V3 —— 品牌档案（文档 §十三）
+/// 替代 contentDirector.js 写死的「远拓旅游：年轻、松弛、山系高级感」。
+/// 未设置 BrandProfile 时，生成链路使用中性默认品牌语言（见 content-engine/contracts/brandProfile.ts），
+/// 绝不默认所有俱乐部都是「年轻、松弛、山系高级感」。
+model BrandProfile {
+  id                  BigInt   @id @default(autoincrement())
+  merchantId          BigInt   @unique @map("merchant_id")
+  brandName           String?  @map("brand_name")
+  toneKeywords        String[] @map("tone_keywords")
+  avoidKeywords       String[] @map("avoid_keywords")
+  visualKeywords      String[] @map("visual_keywords")
+  primaryColor        String?  @map("primary_color")
+  secondaryColor      String?  @map("secondary_color")
+  typographyPreference String? @map("typography_preference")
+  logo                String?
+  contentRules        String?  @map("content_rules")
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("brand_profiles")
 }

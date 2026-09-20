@@ -17,7 +17,18 @@ import { generateActivityDetail } from '../content-engine/workflows/detail.workf
 import { runWechatPipeline } from '../content-engine/workflows/wechat.workflow';
 import { runXiaohongshuPipeline } from '../content-engine/workflows/xiaohongshu.workflow';
 import { runRecapPipeline } from '../content-engine/workflows/recap.workflow';
-import { getLatestDocument, listRecentFingerprints } from '../content-engine/storage/repo';
+import {
+  getLatestDocument,
+  listRecentFingerprints,
+  getBrandProfile,
+  upsertBrandProfile,
+  listDocumentsForMetrics,
+  publishContentDocument,
+} from '../content-engine/storage/repo';
+import { computeQualityMetrics, type MetricsDocInput } from '../content-engine/steps/metrics';
+import type { CreativeFingerprint } from '../content-engine/contracts/fingerprints';
+import type { ActivityTruth } from '../content-engine/contracts/activityTruth';
+import type { PromoDocument } from '../content-engine/contracts/promoDocument';
 
 const router = Router();
 router.use(requireAdmin);
@@ -358,6 +369,138 @@ router.get('/memory/:scenario', async (req, res: Response) => {
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(500).json(fail('读取失败：' + msg));
+  }
+});
+
+/** 文档 §十三 —— 品牌档案（BrandProfile） */
+const BrandProfileSchema = z.object({
+  brandName: z.string().max(80).optional().nullable(),
+  toneKeywords: z.array(z.string().max(30)).max(20).optional(),
+  avoidKeywords: z.array(z.string().max(30)).max(20).optional(),
+  visualKeywords: z.array(z.string().max(30)).max(20).optional(),
+  primaryColor: z.string().max(30).optional().nullable(),
+  secondaryColor: z.string().max(30).optional().nullable(),
+  typographyPreference: z.string().max(40).optional().nullable(),
+  logo: z.string().max(500).optional().nullable(),
+  contentRules: z.string().max(500).optional().nullable(),
+});
+
+/**
+ * GET /api/content/brand-profile
+ * 未设置时返回 brandProfile=null —— 生成链路据此使用中性默认品牌语言，
+ * 绝不默认所有俱乐部都是「年轻、松弛、山系高级感」。
+ * ★ 必须注册在 GET /:id 之前，否则会被 /:id 吃掉。
+ */
+router.get('/brand-profile', async (req, res: Response) => {
+  const merchantId = Number(req.admin?.sub);
+  if (!merchantId) {
+    res.status(401).json(fail('未登录'));
+    return;
+  }
+  try {
+    const brandProfile = await getBrandProfile(merchantId);
+    res.json(ok({ brandProfile, neutral: !brandProfile }));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json(fail('读取品牌档案失败：' + msg));
+  }
+});
+
+/** PUT /api/content/brand-profile —— 新建或更新本俱乐部品牌档案 */
+router.put('/brand-profile', async (req, res: Response) => {
+  const merchantId = Number(req.admin?.sub);
+  if (!merchantId) {
+    res.status(401).json(fail('未登录'));
+    return;
+  }
+  const parsed = BrandProfileSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(zodMessage(parsed.error)));
+    return;
+  }
+  try {
+    const brandProfile = await upsertBrandProfile(merchantId, parsed.data);
+    res.json(ok({ brandProfile }));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json(fail('保存品牌档案失败：' + msg));
+  }
+});
+
+/**
+ * POST /api/content/:id/publish
+ * 文档 §二十四：标记发布并写入 publishedAt —— Time-to-Publish 的时间基准点。
+ */
+router.post('/:id/publish', async (req, res: Response) => {
+  const merchantId = Number(req.admin?.sub);
+  if (!merchantId) {
+    res.status(401).json(fail('未登录'));
+    return;
+  }
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) {
+    res.status(400).json(fail('id 不合法'));
+    return;
+  }
+  try {
+    const doc = await publishContentDocument(id, merchantId);
+    res.json(ok({
+      id: String(doc.id),
+      status: doc.status,
+      publishedAt: doc.publishedAt,
+      /** 从生成到发布的耗时（§二十四 Time-to-Publish 的原始样本） */
+      timeToPublishMs: doc.publishedAt ? doc.publishedAt.getTime() - doc.createdAt.getTime() : null,
+    }));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json(fail('发布失败：' + msg));
+  }
+});
+
+/**
+ * GET /api/content/metrics —— 文档 §二十四 质量指标仪表盘
+ * 5 个指标：Direct Publish Rate / Edit Ratio / Diversity / Grounding / Time-to-Publish
+ * 可选 query：scenario(detail|wechat|xiaohongshu|recap)、limit(<=100，默认 50)
+ * ★ 必须注册在 GET /:id 之前，否则会被 /:id 吃掉。
+ */
+router.get('/metrics', async (req, res: Response) => {
+  const merchantId = Number(req.admin?.sub);
+  if (!merchantId) {
+    res.status(401).json(fail('未登录'));
+    return;
+  }
+  const scenario = String(req.query.scenario || '').trim();
+  const limitRaw = Number(req.query.limit);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(100, Math.floor(limitRaw)) : 50;
+
+  try {
+    const rows = await listDocumentsForMetrics(
+      merchantId,
+      scenario || null,
+      limit
+    );
+    const docs: MetricsDocInput[] = rows.map((r) => {
+      const doc = r.document as unknown as
+        | { blocks?: unknown[]; generationMeta?: { editorAction?: string } }
+        | null;
+      return {
+        id: String(r.id),
+        scenario: r.scenario,
+        createdAt: r.createdAt,
+        publishedAt: r.publishedAt ?? null,
+        status: r.status,
+        // 被改过的文档在 generationMeta.editorAction 上留痕（§十八 编辑器端点写入）
+        editorAction: doc?.generationMeta?.editorAction ?? null,
+        fingerprint: r.fingerprint as unknown as CreativeFingerprint | null,
+        truth: r.truthSnapshot as unknown as ActivityTruth | null,
+        document: r.document as unknown as PromoDocument | null,
+      };
+    });
+    const metrics = computeQualityMetrics(docs, { scenario: scenario || null, window: 20 });
+    res.json(ok(metrics));
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json(fail('读取质量指标失败：' + msg));
   }
 });
 

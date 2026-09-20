@@ -22,6 +22,7 @@ import {
 import { buildPrompt, callJsonLlm } from './llm';
 import { unsupportedNumbersIn } from './quality';
 import type { VisionResult } from '../contracts/visionResult';
+import type { BrandProfile } from '../contracts/brandProfile';
 import { logger } from '../../lib';
 
 export interface MarketingInsight {
@@ -127,24 +128,49 @@ export interface DirectionsResult {
   llmError: string;
 }
 
+/**
+ * 文档 §十三：把 BrandProfile 的品牌语言偏好拼成一段写进 prompt 的话。
+ * 只有俱乐部真的填了 toneKeywords / visualKeywords 才注入；否则返回空串
+ * （中性默认，绝不默认任何调性）。
+ */
+function buildBrandVoice(brand?: BrandProfile | null): string {
+  if (!brand) return '';
+  const tone = (brand.toneKeywords ?? []).filter(Boolean);
+  const visual = (brand.visualKeywords ?? []).filter(Boolean);
+  if (!tone.length && !visual.length) return '';
+  const parts = [...tone, ...visual].filter(Boolean);
+  const name = brand.brandName ? `（${brand.brandName}）` : '';
+  return `\n\n【品牌调性】该俱乐部的品牌语言偏好：${parts.join('、')}${name}。请基于活动事实与这一品牌偏好推导方向，但不得编造任何事实或数字。`;
+}
+
 /** Step 5：生成 3 个候选方向（LLM，失败退化为由本场证据推出的确定性方向） */
 export async function generateDirections(
   merchantId: string,
   truth: ActivityTruth,
   insight: MarketingInsight,
-  vision: VisionResult[]
+  vision: VisionResult[],
+  /** 文档 §十三：品牌档案。null/undefined = 中性默认品牌语言，绝不默认任何具体调性 */
+  brand?: BrandProfile | null
 ): Promise<DirectionsResult> {
   const material = [
     ...truth.groundedScenes.map((s) => s.value),
     ...vision.flatMap((v) => v.scene ?? []),
   ].slice(0, 16);
 
+  const forbiddenAssumptions = [
+    '把灵感当成事实',
+    '固定话术如“逃离城市”“治愈”“松弛”',
+    // 品牌明确说不要的词，直接进禁忌清单（§十三）
+    ...(brand?.avoidKeywords?.length ? brand.avoidKeywords : []),
+  ];
+  const brandVoice = buildBrandVoice(brand);
+
   const prompt = buildPrompt(
     {
       confirmedTruth: { ...truth.confirmedFacts, itineraryDays: truth.itinerary.length },
       materialEvidence: material,
       creativeContext: { ...truth.creativeContext, insight },
-      forbiddenAssumptions: ['把灵感当成事实', '固定话术如“逃离城市”“治愈”“松弛”'],
+      forbiddenAssumptions,
     },
     `输出 JSON：{"directions": [ ...3 个... ]}
 每个 direction：
@@ -167,7 +193,7 @@ export async function generateDirections(
 }
 要求：3 个方向的 thesis 必须互不相同，styleVector 也要有真实差异。
 ★ 数字只能原样出现在上面给出的事实与素材里：禁止四舍五入、禁止写约数
-  （海拔 1004 米不能写成「1000 米级」，4980 元不能写成「5000 元档」）。`
+  （海拔 1004 米不能写成「1000 米级」，4980 元不能写成「5000 元档」）。${brandVoice}`
   );
 
   let raw: Partial<CreativeDirection>[] = [];
