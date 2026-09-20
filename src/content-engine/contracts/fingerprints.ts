@@ -101,10 +101,44 @@ function infoPositionOf(blocks: ContentBlock[]): string {
 }
 
 /**
+ * 渠道文档（公众号 / 小红书 / 回顾）没有 Creative blocks，但它们**有自己的段落结构**：
+ * 段落承担什么（purpose）、该段配几张图（imageSlots）、这一段有多长。
+ *
+ * 把它们折算成与 blocks 同构的输入交给指纹算法，而不是传 `blocks: []` ——
+ * 传 `[]` 的后果是这些文档在指纹里只剩 thesisText 一个字段，
+ * 跨场次去重只能比「说了什么」，比不了「怎么排的」，而「排法」恰恰是渠道差异的载体。
+ *
+ * ★ 注意：如果某个渠道的段落形态本来就恒定（例如小红书恒为「图集 + 正文」），
+ *   那么它的结构相似度**理应**偏高 —— 那种渠道的差异化由文案层和 StyleVector 承担，
+ *   不代表检测失效。这里只负责把「结构」如实喂进算法。
+ */
+export function sectionsAsBlocks(
+  sections: ReadonlyArray<{ purpose?: string; images?: number; text?: string }>
+): ContentBlock[] {
+  return (sections || []).map((s, i) => {
+    const images = Math.max(0, Number(s.images) || 0);
+    return {
+      id: `sec-${i + 1}`,
+      type: (images > 0 ? 'text_image' : 'statement') as ContentBlockType,
+      purpose: String(s.purpose || `段落${i + 1}`),
+      communicationGoal: '',
+      evidenceRefs: [],
+      copy: { body: String(s.text ?? '') },
+      mediaRefs: Array.from({ length: images }, (_, k) => `img-${i + 1}-${k + 1}`),
+      layout: { width: 'normal' as const },
+    };
+  });
+}
+
+/**
  * 结构相似度（0~1）—— 文档 §八「Structure Similarity」第一层（离线可用）。
  * 语义层必须走 embedding 或 LLM judge，不在这里伪造。
  */
 export function structureSimilarity(a: CreativeFingerprint, b: CreativeFingerprint): number {
+  // 没有段落可比时，`hero 都是 none` 与 `cta 都是 none` 会各白送 0.15，
+  // 让两份「什么都没排」的文档拿到 0.3 —— 那种相等是空的。
+  // 无结构就是无证据：直接 0，不要靠边界行为拼出一个虚高的分数。
+  if (!a.componentSequence.length || !b.componentSequence.length) return 0;
   const seqScore = jaccard(a.componentSequence, b.componentSequence);
   const purposeScore = jaccard(a.blockPurposeSequence, b.blockPurposeSequence);
   const heroScore = a.heroMode === b.heroMode ? 1 : 0;
@@ -148,6 +182,8 @@ export function styleDistance(a: StyleVector, b: StyleVector): number {
 
 /** 视觉相似度（0~1）—— hero mode + 图文比 + 图像分组 + 文本密度节奏 */
 export function visualSimilarity(a: CreativeFingerprint, b: CreativeFingerprint): number {
+  // 与 structureSimilarity 同理：没有段落时 hero 的「都是 none」也是白送分
+  if (!a.componentSequence.length || !b.componentSequence.length) return 0;
   const ratio = 1 - Math.min(1, Math.abs(a.mediaTextRatio - b.mediaTextRatio));
   const group = jaccard(a.imageGroupPattern, b.imageGroupPattern);
   const density = densityDistance(a.textDensityPattern, b.textDensityPattern);
@@ -155,10 +191,20 @@ export function visualSimilarity(a: CreativeFingerprint, b: CreativeFingerprint)
   return round(ratio * 0.35 + group * 0.25 + density * 0.2 + hero * 0.2);
 }
 
+/**
+ * ★「两边都空」不等于「两边一样」。
+ *
+ * 原实现 `if (!sx.size && !sy.size) return 1;` 让「都没有 blocks」的两份文档
+ * 结构相似度恒为 1 —— 而 wechat/xiaohongshu/recap 三个渠道文档在指纹里传的就是
+ * `blocks: []`，于是它们的 structureSimilarity / visualSimilarity 永远是 1.0，
+ * `tooRepetitive = 语义高 且 (结构高 或 视觉高)` 里的后半句完全失效，
+ * 去重判据退化成「只看 thesis 像不像」，而报告里那个 structure=1.0 是假的。
+ *
+ * 没有可比元素就是没有证据：返回 0，而不是宣称「完全一致」。
+ */
 function jaccard(x: readonly string[], y: readonly string[]): number {
   const sx = new Set(x.filter(Boolean));
   const sy = new Set(y.filter(Boolean));
-  if (!sx.size && !sy.size) return 1;
   if (!sx.size || !sy.size) return 0;
   let inter = 0;
   sx.forEach((v) => sy.has(v) && inter++);
@@ -166,9 +212,10 @@ function jaccard(x: readonly string[], y: readonly string[]): number {
   return union ? inter / union : 0;
 }
 
+/** 同上：没有可比段落时不能宣称「文字密度节奏完全一致」 */
 function densityDistance(x: readonly number[], y: readonly number[]): number {
   const n = Math.min(x.length, y.length);
-  if (!n) return 1;
+  if (!n) return 0;
   let sum = 0;
   for (let i = 0; i < n; i++) sum += Math.abs(x[i] - y[i]);
   return 1 - Math.min(1, sum / n);

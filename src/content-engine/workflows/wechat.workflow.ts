@@ -9,7 +9,7 @@
  */
 
 import type { WechatDocument } from '../contracts/channels';
-import { buildCreativeFingerprint } from '../contracts/fingerprints';
+import { buildCreativeFingerprint, sectionsAsBlocks } from '../contracts/fingerprints';
 import { evaluateSimilarity } from '../steps/quality';
 import {
   buildWechatBlueprint,
@@ -52,15 +52,23 @@ export async function runWechatPipeline(input: CommonInput): Promise<WechatResul
     styleVector: common.direction.styleVector,
   });
 
+  // ★ 段落结构（purpose / 配图数 / 段长）就是这一版的「排法」，必须进指纹；
+  //   传 [] 会让公众号只剩一句 thesis 可比，跨场次去重形同虚设。
+  const structuralBlocks = sectionsAsBlocks(
+    (blueprint.sections || []).map((s) => ({
+      purpose: s.purpose,
+      images: s.imageSlots,
+      text: (s.paragraphs || []).join(''),
+    }))
+  );
   const fingerprint = buildCreativeFingerprint({
     thesisText: common.direction.thesis,
     openingMode: blueprint.opening,
-    blocks: [],
+    blocks: structuralBlocks,
     styleVector: common.direction.styleVector,
   });
-  // 写入场景内的本题考查：文案层复用 copySimilarity，结构层在 [] 时退化为 0
   const evaluation = evaluateSimilarity(
-    { thesisText: common.direction.thesis, openingMode: blueprint.opening, blocks: [] },
+    { thesisText: common.direction.thesis, openingMode: blueprint.opening, blocks: structuralBlocks },
     common.history
   );
 
@@ -79,7 +87,9 @@ export async function runWechatPipeline(input: CommonInput): Promise<WechatResul
       model: 'platform-llm',
       workflowVersion: WORKFLOW_VERSION,
       generatedAt: new Date().toISOString(),
-      repairCount: evaluation.tooRepetitive ? 1 : 0,
+      // 公众号目前没有改稿步骤 —— 「像历史」不能谎报成「改过一次」
+      repairCount: 0,
+      repetitive: evaluation.tooRepetitive,
     },
   };
 

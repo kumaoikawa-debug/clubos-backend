@@ -20,6 +20,7 @@ import {
   clamp01,
 } from '../contracts/creativeDirection';
 import { buildPrompt, callJsonLlm } from './llm';
+import { unsupportedNumbersIn } from './quality';
 import type { VisionResult } from '../contracts/visionResult';
 import { logger } from '../../lib';
 
@@ -147,7 +148,9 @@ export async function generateDirections(
   "expectedVisualStrategy": "视觉策略一句话",
   "rationale": "为什么这个方向适合这场活动（内部留痕，不会上屏）"
 }
-要求：3 个方向的 thesis 必须互不相同，styleVector 也要有真实差异。`
+要求：3 个方向的 thesis 必须互不相同，styleVector 也要有真实差异。
+★ 数字只能原样出现在上面给出的事实与素材里：禁止四舍五入、禁止写约数
+  （海拔 1004 米不能写成「1000 米级」，4980 元不能写成「5000 元档」）。`
   );
 
   let raw: Partial<CreativeDirection>[] = [];
@@ -169,7 +172,41 @@ export async function generateDirections(
   }
 
   const directions = raw.map((d, i) => normalizeDirection(d, truth, insight, i));
-  return dedupeDirections(directions, truth, insight);
+  return dedupeDirections(rejectUngroundedDirections(directions, truth), truth, insight);
+}
+
+/**
+ * 方向级事实闸门。
+ *
+ * 为什么必须在方向这一层就拦：thesis 与 communicationAngle 不是内部字段 ——
+ *   · 公众号 opening 直接取 direction.thesis（channels.ts）
+ *   · 小红书 hook / mainAngle / body 直接取 communicationAngle 与 thesis
+ *   · 详情页 quote 型 block 的 headline 取 thesis
+ * 于是 LLM 在方向里随手写的「海拔 5000 米」（实际 5025）、「2700 米」
+ * 会一字不改地出现在用户读到的文案里，而块级 groundClaims 根本管不到它
+ * （groundClaims 只看 blocks 的 copy）。验收时正是这条路径漏出了编造数字。
+ *
+ * 处理方式：整条方向拒收，不做数字擦除 —— 从 thesis 里抠掉数字必然留下破句，
+ * 而「永不产破句」是硬约定。方向有 3 个候选，拒收一条还剩两条；
+ * 全被拒收时由 dedupeDirections 里那套「由本场证据推出」的确定性兜底补位。
+ */
+export function rejectUngroundedDirections(
+  list: CreativeDirection[],
+  truth: ActivityTruth
+): CreativeDirection[] {
+  const kept: CreativeDirection[] = [];
+  for (const d of list) {
+    const visible = [d.thesis, d.communicationAngle, ...(d.narrativeStrategy || [])].join(' ');
+    const bad = Array.from(new Set(unsupportedNumbersIn(visible, truth)));
+    if (bad.length) {
+      logger.warn(
+        `[v3/direction] 拒收方向「${d.thesis}」：thesis/angle 出现事实池外的数字 ${bad.join('、')}`
+      );
+      continue;
+    }
+    kept.push(d);
+  }
+  return kept;
 }
 
 function normalizeDirection(

@@ -10,7 +10,7 @@
  */
 
 import type { ActualActivityData, RecapDocument } from '../contracts/channels';
-import { buildCreativeFingerprint } from '../contracts/fingerprints';
+import { buildCreativeFingerprint, sectionsAsBlocks } from '../contracts/fingerprints';
 import { evaluateSimilarity } from '../steps/quality';
 import { buildRecapInsight, writeRecapSections } from '../steps/channels';
 import { renderWechatHtml } from '../renderers/wechatHtml';
@@ -68,14 +68,24 @@ export async function runRecapPipeline(input: RecapInput): Promise<RecapResult> 
     styleVector: common.direction.styleVector,
   });
 
+  // ★ 回顾有自己的段落结构（purpose / imageSlots / 段长），必须如实喂给指纹：
+  //   传 blocks: [] 会让它只剩一句 coreMemory 可比 —— 而所有回顾的 coreMemory
+  //   恰恰都取自现场素材，比出来的「高度重复」是假的，真正该发现的「排法雷同」反而看不见。
+  const structuralBlocks = sectionsAsBlocks(
+    (sections || []).map((s) => ({
+      purpose: s.purpose,
+      images: s.imageSlots,
+      text: (s.paragraphs || []).join(''),
+    }))
+  );
   const fingerprint = buildCreativeFingerprint({
     thesisText: insight.coreMemory || common.direction.thesis,
     openingMode: 'actual-core-memory',
-    blocks: [],
+    blocks: structuralBlocks,
     styleVector: common.direction.styleVector,
   });
   const evaluation = evaluateSimilarity(
-    { thesisText: insight.coreMemory, openingMode: 'actual-core-memory', blocks: [] },
+    { thesisText: insight.coreMemory, openingMode: 'actual-core-memory', blocks: structuralBlocks },
     common.history
   );
 
@@ -93,7 +103,9 @@ export async function runRecapPipeline(input: RecapInput): Promise<RecapResult> 
       model: 'platform-llm',
       workflowVersion: WORKFLOW_VERSION,
       generatedAt: new Date().toISOString(),
-      repairCount: evaluation.tooRepetitive ? 1 : 0,
+      // 回顾目前没有改稿步骤 —— 「像历史」不能谎报成「改过一次」
+      repairCount: 0,
+      repetitive: evaluation.tooRepetitive,
     },
   };
 

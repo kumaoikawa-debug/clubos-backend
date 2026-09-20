@@ -66,6 +66,16 @@ export interface GenerationMeta {
   workflowVersion: string;
   generatedAt: string;
   repairCount: number;
+  /**
+   * 与同渠道最近内容是否被判为「高度重复」（Step 12 的 tooRepetitive）。
+   *
+   * ★ 单独记这个字段的原因：只有 detail 会真的去改稿（repairDocument），
+   *   公众号/小红书/回顾目前没有 repair 步骤。它们原先把 tooRepetitive 直接写进
+   *   repairCount，于是验收里读到「回顾 6 场全部 repair 1 次」——
+   *   而实际上一次都没改过。指标必须说真话：没改就是 repairCount=0，
+   *   「像不像历史」单独记在这里。
+   */
+  repetitive?: boolean;
 }
 
 export interface PromoDocument {

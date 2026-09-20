@@ -9,7 +9,7 @@
  */
 
 import type { XiaohongshuDocument } from '../contracts/channels';
-import { buildCreativeFingerprint } from '../contracts/fingerprints';
+import { buildCreativeFingerprint, sectionsAsBlocks } from '../contracts/fingerprints';
 import { evaluateSimilarity } from '../steps/quality';
 import { writeXiaohongshu, sequenceXhsPhotos } from '../steps/channels';
 import { saveContentDocument, appendCreativeMemory } from '../storage/repo';
@@ -32,14 +32,24 @@ export async function runXiaohongshuPipeline(input: CommonInput): Promise<XhsRes
     written.mainAngle
   );
 
+  // ★ 小红书的「结构」= 图集 + 正文分段。原文传 blocks: [] 时它只剩 thesis 可比，
+  //   连「这条是图多还是字多」都进不了指纹，跨场次去重等于没做。
+  const structuralBlocks = sectionsAsBlocks([
+    { purpose: '图集顺序', images: sequence.length, text: '' },
+    ...String(written.body || '')
+      .split(/\n{2,}/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((text) => ({ purpose: '正文段', text })),
+  ]);
   const fingerprint = buildCreativeFingerprint({
     thesisText: common.direction.thesis,
     openingMode: written.hook,
-    blocks: [],
+    blocks: structuralBlocks,
     styleVector: common.direction.styleVector,
   });
   const evaluation = evaluateSimilarity(
-    { thesisText: common.direction.thesis, openingMode: written.hook, blocks: [] },
+    { thesisText: common.direction.thesis, openingMode: written.hook, blocks: structuralBlocks },
     common.history
   );
 
@@ -60,7 +70,9 @@ export async function runXiaohongshuPipeline(input: CommonInput): Promise<XhsRes
       model: 'platform-llm',
       workflowVersion: WORKFLOW_VERSION,
       generatedAt: new Date().toISOString(),
-      repairCount: evaluation.tooRepetitive ? 1 : 0,
+      // 小红书目前没有改稿步骤 —— 「像历史」不能谎报成「改过一次」
+      repairCount: 0,
+      repetitive: evaluation.tooRepetitive,
     },
   };
 

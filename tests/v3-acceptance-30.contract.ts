@@ -26,6 +26,13 @@ import { buildTruth, normalizeInput } from '../src/content-engine/steps/truth';
 import { isValidBlockType, CONTENT_BLOCK_TYPES } from '../src/content-engine/contracts/promoDocument';
 import type { ActivityTruth } from '../src/content-engine/contracts/activityTruth';
 import { buildFixture30, type Fixture } from '../tools/v3-fixture-30';
+import { rejectUngroundedDirections } from '../src/content-engine/steps/direction';
+import {
+  buildCreativeFingerprint,
+  sectionsAsBlocks,
+  structureSimilarity,
+  visualSimilarity,
+} from '../src/content-engine/contracts/fingerprints';
 import {
   actualFactPool,
   bannedHits,
@@ -439,6 +446,80 @@ check('I1 渠道文档 scenario / activityId 正确回填', () => {
     if (!r.doc.generationMeta || !r.doc.generationMeta.workflowVersion) bad.push(`${r.id}:no-meta`);
   }
   must(bad.length === 0, bad.slice(0, 6).join(' | '));
+});
+
+/* ============================================================
+ * §J 20 场线上跑批逼出来的三处真实缺陷（回归锁）
+ *
+ * 这三条都不是「风格意见」，是线上真实产出里的错：
+ *   J1 指标说谎 —— 渠道场景没有改稿步骤，却把「像历史」写进 repairCount
+ *   J2 编造数字从方向层溜进正文 —— 块级 groundClaims 管不到 direction.thesis
+ *   J3 去重判据退化 —— 空 blocks 的结构相似度恒为 1，「一个样」检测不出来
+ * ========================================================== */
+
+check('J1 ★渠道 repairCount 不谎报：没有改稿步骤就必须是 0（撞车另记 repetitive）', () => {
+  const bad: string[] = [];
+  for (const r of runs) {
+    if (r.scenario === 'detail') continue; // detail 真的会跑 repairDocument，次数由它给
+    const meta = (r.doc.generationMeta || {}) as Record<string, unknown>;
+    if (Number(meta.repairCount) !== 0) {
+      bad.push(`${r.id}/${r.scenario}:repairCount=${meta.repairCount}（该场景没有改稿步骤）`);
+    }
+    if (typeof meta.repetitive !== 'boolean') {
+      bad.push(`${r.id}/${r.scenario}:generationMeta.repetitive 缺失（撞车信号不能丢）`);
+    }
+  }
+  must(bad.length === 0, bad.slice(0, 6).join(' | '));
+});
+
+check('J2 ★方向级事实闸门：thesis/angle 里出现事实池外数字的方向必须被拒收', () => {
+  const fx = fixtures[0];
+  const truth = truthOf(fx);
+  const dist = String(truth.confirmedFacts.distance ?? '');
+  const title = String(truth.confirmedFacts.title ?? '');
+  const mk = (thesis: string, angle: string): unknown => ({
+    id: 'probe',
+    thesis,
+    targetAudience: '',
+    primaryMotivation: '',
+    primaryBarrier: '',
+    communicationAngle: angle,
+    evidenceRefs: [],
+    narrativeStrategy: [],
+    styleVector: {},
+    expectedVisualStrategy: '',
+    rationale: '',
+  });
+  // 两侧都要能证伪：编造的必须拒、有据的必须留。
+  // 只断言「被拒了」是不够的 —— 一个把所有方向都拒掉的实现也能通过那种断言。
+  const kept = rejectUngroundedDirections(
+    [
+      mk('海拔 9999 米的雪线', '围绕着 8888 元档展开'),
+      mk(`${title}：距 ${dist} 的一次出行`, '按事实讲清楚这一天'),
+    ] as never,
+    truth
+  );
+  must(kept.length === 1, `应只留下 1 条有据方向，实际留下 ${kept.length} 条`);
+  must(kept[0].thesis.indexOf(title) >= 0, `留下的不是那条有据方向：${kept[0].thesis}`);
+  must(dist !== '', '夹具 acc-01 本应有 distance 事实，否则 J2 退化成空断言');
+});
+
+check('J3 ★空结构不得被判为「完全一致」：无段落可比时 structure/visual 必须为 0', () => {
+  const empty = buildCreativeFingerprint({ thesisText: 'x', openingMode: 'a', blocks: [] });
+  const one = buildCreativeFingerprint({
+    thesisText: 'y',
+    openingMode: 'b',
+    blocks: sectionsAsBlocks([{ purpose: '开场', images: 1, text: '一二三四五' }]),
+  });
+  const s = structureSimilarity(empty, empty);
+  const v = visualSimilarity(empty, empty);
+  const cross = structureSimilarity(empty, one);
+  must(s === 0, `空 vs 空 structure=${s}（旧实现恒为 1，渠道文档去重因此形同虚设）`);
+  must(v === 0, `空 vs 空 visual=${v}（同上）`);
+  must(cross === 0, `空 vs 有结构 structure=${cross}（无证据不等于相似）`);
+  // 反过来：两边都有结构时，判据必须真的能给出非零相似度，否则就是把指标改成恒 0
+  const same = structureSimilarity(one, one);
+  must(same > 0, `有结构 vs 自身 structure=${same}（判据被改哑了）`);
 });
 
 /* ============================================================

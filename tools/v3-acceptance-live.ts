@@ -15,6 +15,8 @@
  *   CLUBOS_MERCHANT_ID    俱乐部 ID          默认 1
  *   V3_LIVE_SCENARIOS     跑哪些场景         默认 detail,wesample,recap
  *   V3_LIVE_LIMIT         跑前 N 场          默认 30（0=全部）
+ *   V3_LIVE_ONLY          只跑这些场次       默认空（逗号分隔，如 acc-03,acc-17）—— 用于「只补跑失败的那几场」
+ *   V3_LIVE_RETRY         瞬时故障重试次数   默认 3（仅对 5xx / 网络错误 / 非 JSON 响应重试；4xx 不重试）
  *   V3_LIVE_PREFIX        活动 id 前缀       默认 p6-（便于识别/可重跑，不覆盖真实活动）
  *   V3_LIVE_OUT           输出 JSON 路径     默认 ./tmp/v3-acceptance-live.json
  *   V3_LIVE_HTML          输出 HTML 路径     默认 ./tmp/v3-acceptance-live.html
@@ -58,11 +60,19 @@ const BASE = (process.env.CLUBOS_BASE || 'https://clubos-backend-gald.onrender.c
 const MERCHANT = process.env.CLUBOS_MERCHANT_ID || '1';
 const PREFIX = process.env.V3_LIVE_PREFIX ?? 'p6-';
 const LIMIT = Number(process.env.V3_LIVE_LIMIT ?? 30);
+/** 「只补跑失败的那几场」：逗号分隔的 fixture id（acc-03,acc-17） */
+const ONLY = (process.env.V3_LIVE_ONLY || '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+/** 瞬时故障重试次数 —— 免费实例会重启（部署/冷启动），长跑批没有重试会把网关抖动记成产品失败 */
+const RETRY = Number(process.env.V3_LIVE_RETRY ?? 3);
 const OUT_JSON = process.env.V3_LIVE_OUT || path.join(process.cwd(), 'tmp', 'v3-acceptance-live.json');
 const OUT_HTML = process.env.V3_LIVE_HTML || path.join(process.cwd(), 'tmp', 'v3-acceptance-live.html');
 
-/** 渠道抽样：detail 全量，渠道只在前 N 场跑（含 recap 的现场素材子集） */
-const SAMPLE = Number(process.env.V3_LIVE_SAMPLE ?? 6);
+/** 渠道抽样：detail 全量，渠道只在前 N 场跑（含 recap 的现场素材子集）。
+    用 V3_LIVE_ONLY 补跑时默认不跑渠道 —— 补跑通常只为把失败那几场的 detail 补齐。 */
+const SAMPLE = Number(process.env.V3_LIVE_SAMPLE ?? (ONLY.length ? 0 : 6));
 const WITH_ACTUAL = ['acc-01', 'acc-02', 'acc-09', 'acc-16', 'acc-23', 'acc-30'];
 
 function adminCode(): string {
@@ -103,33 +113,89 @@ interface GenOutcome {
   httpStatus: number;
 }
 
-/** 回顾的现场素材：既用于发请求，也用作「有据数字」的事实池（响应不回显它） */
-const ACTUAL_FIXTURE = {
-  attendance: 18,
-  weather: '晴，山脊风大',
-  highlights: ['全员登顶', '山脊视野极好'],
-  feedbacks: ['比想象中累但值得'],
-  onSiteNotes: ['18 人全员完成，无一人下撤'],
+/**
+ * 回顾的现场素材：既用于发请求，也用作「有据数字」的事实池（响应不回显它）。
+ *
+ * ★ 必须**逐场不同**。原先 6 场回顾共用同一份素材（同样的 highlights），
+ *   而 recap 的 coreMemory 就是 highlights[0] —— 于是 6 场的「核心记忆」
+ *   是同一个字符串，文案相似度天然 100%，报告里读出「回顾 6/6 全部重复」；
+ *   段落结构也全是 sec3|slots111，看起来像「所有回顾都一个样」。
+ *   那是夹具造成的假信号：夹具不能替引擎背锅，也不能给引擎放假。
+ */
+const ACTUALS: Record<string, Record<string, unknown>> = {
+  'acc-01': {
+    attendance: 18,
+    weather: '晴，山脊有风',
+    highlights: ['12:30 全队登顶白云嶂', '山脊云海比预期好'],
+    feedbacks: ['下坡比想象中费腿'],
+    onSiteNotes: ['18 人全员完成，无一人下撤'],
+  },
+  'acc-02': {
+    attendance: 10,
+    weather: '晴，午后有阵雪',
+    highlights: ['凌晨 4 点出发，10 人全队登顶大峰', '在大本营的第一晚几乎没睡着'],
+    feedbacks: ['海拔适应那两天最难熬'],
+    onSiteNotes: ['实到 10 人，1 人因高反留在大本营'],
+  },
+  'acc-09': {
+    attendance: 15,
+    weather: '多云，溪水偏凉',
+    highlights: ['孩子们自己认出了三种溪流昆虫', '最小的 4 岁全程自己走完'],
+    feedbacks: ['孩子回家还在讲溪里的小鱼'],
+    onSiteNotes: ['15 人（含 8 名儿童）完成全程'],
+  },
+  'acc-16': {
+    attendance: 46,
+    weather: '阴，起跑时 12 度',
+    highlights: ['46 人全部在关门时间内完赛', '最后 5 公里碎石坡最磨人'],
+    feedbacks: ['补给点的热姜茶救了命'],
+    onSiteNotes: ['实到 46 人，2 人中途退赛'],
+  },
+  'acc-23': {
+    attendance: 22,
+    weather: '晴，骑楼下有荫',
+    highlights: ['讲解员带大家认出了三处民国骑楼', '糖水铺老板多送了一碗'],
+    feedbacks: ['原来走了十几年的街还有这些故事'],
+    onSiteNotes: ['实到 22 人，走完全程 4 公里'],
+  },
+  'acc-30': {
+    attendance: 9,
+    weather: '沙漠段晴、洞穴段阴冷',
+    highlights: ['9 人在沙漠里走完了 3 天', '第 5 天完成 30 米绳索下降'],
+    feedbacks: ['洞穴里那段安静得能听见自己心跳'],
+    onSiteNotes: ['实到 9 人，全员完成洞穴下降'],
+  },
 };
 
-async function generate(
+/** 没有专属素材的场次给一份通用素材（同样不能与方案原文混同） */
+function actualFor(fx: Fixture): Record<string, unknown> {
+  return (
+    ACTUALS[fx.id] ?? {
+      attendance: 12,
+      weather: '晴',
+      highlights: ['按计划走完全程'],
+      feedbacks: ['节奏比预想稳'],
+      onSiteNotes: ['实到 12 人，无中途下撤'],
+    }
+  );
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** 只有「大概率跟内容无关」的失败才重试：网络异常 / 5xx / 非 JSON（Render 网关的 HTML 错误页）。
+    4xx 一律不重试 —— 401 是鉴权真错、400 是入参真错，重试只会掩盖问题。 */
+function isTransient(o: GenOutcome): boolean {
+  if (o.ok) return false;
+  if (o.httpStatus === 0) return true;
+  if (o.httpStatus >= 500) return true;
+  return /^非 JSON 响应/.test(o.error);
+}
+
+async function generateOnce(
   token: string,
   scenario: string,
-  activityId: string,
-  fx: Fixture,
-  withActual: boolean
+  body: Record<string, unknown>
 ): Promise<GenOutcome> {
-  const body: Record<string, unknown> = {
-    activityId,
-    activity: fx.activity,
-    planFacts: fx.planFacts,
-    materialText: fx.materialText,
-    photos: fx.photos,
-  };
-  if (scenario === 'recap') {
-    body.actual = withActual ? ACTUAL_FIXTURE : {};
-  }
-
   const t0 = Date.now();
   try {
     const r = await fetch(`${BASE}/api/content/${scenario}/generate`, {
@@ -143,7 +209,7 @@ async function generate(
     try {
       j = JSON.parse(text);
     } catch {
-      return { ok: false, ms, doc: null, extra: null, httpStatus: r.status, error: `非 JSON 响应：${text.slice(0, 160)}` };
+      return { ok: false, ms, doc: null, extra: null, httpStatus: r.status, error: `非 JSON 响应：${text.slice(0, 120)}` };
     }
     if (!r.ok || j.code !== 0) {
       return { ok: false, ms, doc: null, extra: null, httpStatus: r.status, error: `${r.status} ${j.message || ''}` };
@@ -160,6 +226,36 @@ async function generate(
       error: String((e as Error)?.message || e),
     };
   }
+}
+
+async function generate(
+  token: string,
+  scenario: string,
+  activityId: string,
+  fx: Fixture,
+  withActual: boolean
+): Promise<GenOutcome> {
+  const body: Record<string, unknown> = {
+    activityId,
+    activity: fx.activity,
+    planFacts: fx.planFacts,
+    materialText: fx.materialText,
+    photos: fx.photos,
+  };
+  if (scenario === 'recap') {
+    body.actual = withActual ? actualFor(fx) : {};
+  }
+
+  let out = await generateOnce(token, scenario, body);
+  let attempt = 1;
+  while (isTransient(out) && attempt < RETRY) {
+    const wait = 4000 * attempt;
+    console.log(`      ↻ 瞬时失败（${out.error.slice(0, 60)}），${wait}ms 后重试 ${attempt}/${RETRY - 1}`);
+    await sleep(wait);
+    out = await generateOnce(token, scenario, body);
+    attempt++;
+  }
+  return out;
 }
 
 /* ============================================================
@@ -229,9 +325,18 @@ function truthDriftOf(serverTruth: any, localTruth: ActivityTruth): string[] {
  * ========================================================== */
 
 async function main() {
-  const fixtures = buildFixture30().slice(0, LIMIT > 0 ? LIMIT : undefined);
+  const all = buildFixture30();
+  const known = new Set(all.map((f) => f.id));
+  const unknown = ONLY.filter((id) => !known.has(id));
+  if (unknown.length) throw new Error(`V3_LIVE_ONLY 里有未知场次：${unknown.join(',')}`);
+  const picked = ONLY.length ? all.filter((f) => ONLY.includes(f.id)) : all;
+  const fixtures = picked.slice(0, LIMIT > 0 ? LIMIT : undefined);
   const token = await login();
-  console.log(`已登录 ${BASE}（merchant=${MERCHANT}），矩阵 ${fixtures.length} 场\n`);
+  console.log(
+    `已登录 ${BASE}（merchant=${MERCHANT}），矩阵 ${fixtures.length} 场` +
+      (ONLY.length ? `（补跑：${ONLY.join(',')}）` : '') +
+      `，渠道抽样 ${Math.min(SAMPLE, fixtures.length)} 场，重试 ${RETRY}\n`
+  );
 
   const runs: RunRec[] = [];
 
@@ -259,7 +364,7 @@ async function main() {
     if (WITH_ACTUAL.includes(fx.id)) {
       for (const withActual of [true, false]) {
         const o3 = await generate(token, 'recap', activityId, fx, withActual);
-        push(runs, fx, 'recap', activityId, o3, withActual ? ACTUAL_FIXTURE : {});
+        push(runs, fx, 'recap', activityId, o3, withActual ? actualFor(fx) : {});
         console.log(
           `      ${fx.id} recap(${withActual ? '有素材' : '空态'}) ${o3.ok ? 'ok' : 'FAIL'} ${o3.ms}ms${
             o3.ok ? '' : ' :: ' + o3.error
@@ -326,6 +431,8 @@ interface Report {
   llm: { detailRuns: number; usedLlm: number; fallback: number; fallbackRate: number };
   diversity: Record<string, DiversityStats>;
   repairs: Record<string, number>;
+  /** 被判「与同渠道历史高度重复」的场次（与 repairs 分开：撞车 ≠ 改过稿） */
+  repetitive: Record<string, number>;
   timings: { p50: number; p95: number };
 }
 
@@ -418,8 +525,13 @@ function report(runs: RunRec[], fixtures: Fixture[]) {
   const fallback = detailRuns.length - usedLlm;
 
   const repairs: Record<string, number> = {};
+  const repetitive: Record<string, number> = {};
   for (const sc of scenarios) {
-    repairs[sc] = byScenario(runs, sc).reduce((n, r) => n + (r.repairCount > 0 ? 1 : 0), 0);
+    const list = byScenario(runs, sc);
+    repairs[sc] = list.reduce((n, r) => n + (r.repairCount > 0 ? 1 : 0), 0);
+    // 「像历史」不等于「改过一次」：只有 detail 真的有改稿步骤，
+    // 公众号/小红书/回顾当前只记录是否撞车（generationMeta.repetitive）。
+    repetitive[sc] = list.reduce((n, r) => n + (r.doc?.generationMeta?.repetitive ? 1 : 0), 0);
   }
 
   const timings = runs.map((r) => r.ms).sort((a, b) => a - b);
@@ -433,7 +545,8 @@ function report(runs: RunRec[], fixtures: Fixture[]) {
 
   console.log('\n── 链路 ──');
   console.log(`  detail 走真实 LLM：${usedLlm}/${detailRuns.length}（兜底 ${fallback}，兜底率 ${((fallback / Math.max(1, detailRuns.length)) * 100).toFixed(1)}%）`);
-  console.log(`  触发 repair 的场次：${JSON.stringify(repairs)}`);
+  console.log(`  触发 repair 的场次（只有 detail 会真的改稿）：${JSON.stringify(repairs)}`);
+  console.log(`  被判「与历史撞车」的场次：${JSON.stringify(repetitive)}`);
   console.log(`  单次请求 p50=${p50}ms p95=${p95}ms`);
 
   const rep: Report = {
@@ -445,6 +558,7 @@ function report(runs: RunRec[], fixtures: Fixture[]) {
     llm: { detailRuns: detailRuns.length, usedLlm, fallback, fallbackRate: fallback / Math.max(1, detailRuns.length) },
     diversity: { detail: dStats, wechat: wStats, xiaohongshu: xStats },
     repairs,
+    repetitive,
     timings: { p50, p95 },
   };
   (globalThis as any).__V3_REPORT__ = rep;
@@ -584,7 +698,8 @@ function writeArtifacts(runs: RunRec[], fixtures: Fixture[]) {
   </table>
   <div class="note">
     近 5 场最大相似度是跨场次去重真正关心的量：连续发五场，最像的那一对有多像。<br/>
-    触发 repair 的场次：${esc(JSON.stringify(rep.repairs))}
+    触发 repair 的场次（只有 detail 会真的改稿）：${esc(JSON.stringify(rep.repairs))}
+    <br/>被判「与历史撞车」的场次：${esc(JSON.stringify(rep.repetitive))}
   </div>
 </section>
 

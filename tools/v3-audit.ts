@@ -71,7 +71,11 @@ export function docTexts(scenario: string, doc: DocLike): TextItem[] {
   const dir = (d.direction as Record<string, unknown>) || {};
   out.push({ label: 'direction.thesis', text: String(dir.thesis ?? '') });
   out.push({ label: 'direction.angle', text: String(dir.communicationAngle ?? '') });
-  if (dir.targetAudience) out.push({ label: 'direction.audience', text: String(dir.targetAudience) });
+  // ★ 刻意不审计 direction.targetAudience：它只活在 direction 对象里，
+  //   四个渠道的渲染器与文案组装从未引用过它（grep targetAudience 可验），用户永远读不到。
+  //   审计一个不上屏的字段，只会报出运营既无法处理、也无法验证的失败。
+  //   thesis / communicationAngle 不一样 —— 公众号 opening 取 thesis、
+  //   小红书 hook/mainAngle/body 取 communicationAngle 与 thesis，是真的会进正文的。
 
   if (scenario === 'detail') {
     const blocks = Array.isArray(d.blocks) ? (d.blocks as Record<string, unknown>[]) : [];
@@ -144,7 +148,11 @@ export function numbersIn(text: string): string[] {
     /\d{4}\s*[-/.年]\s*\d{1,2}\s*[-/.月]\s*\d{1,2}\s*[日号]?/g, // 2026-10-11 / 2026年10月11日
     /\d{1,2}\s*月\s*\d{1,2}\s*[日号]/g, // 10月11日
     /\d{1,2}\s*[:：]\s*\d{2}/g, // 07:30
-    /(?:^|[^\d])\d{1,2}\s*[-/.]\s*\d{1,2}(?![\d])/g, // 10.11 / 10-11（长日期已被上一条吃掉）
+    // 10.11 / 10-11（形似日期的短写法；长日期已被上面第一条吃掉）。
+    // ★ 必须排除「12.5公里」「5.5小时」这类带单位的小数：早先只用 (?![\d])
+    //   保证后面不是数字，于是编造出来的一位数小数会被当日期剥掉、溜过判据 ——
+    //   假阴性比假阳性更隐蔽，因为验收会因此「全绿」。
+    /(?:^|[^\d])\d{1,2}\s*[-/.]\s*\d{1,2}(?![\d年月日号])(?!\s*(?:公里|千米|km|米|元|人|天|小时|分钟|次|℃|度|%|％|kg|斤|升|L))/g, // 10.11
   ];
   let s = String(text);
   for (const re of dateTime) s = s.replace(re, ' ');

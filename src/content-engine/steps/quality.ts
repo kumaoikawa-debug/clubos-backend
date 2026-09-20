@@ -67,6 +67,27 @@ export function allowedFactTokens(truth: ActivityTruth): Set<string> {
 }
 
 /**
+ * 「这句话里的数字有没有事实出处」—— 全局唯一判据。
+ *
+ * 谁在用：
+ *   - groundClaims（块级：把无据数字擦掉）
+ *   - direction 过滤（方向级：thesis/angle 里有编造数字就拒收整个方向）
+ *   - tools/v3-audit.ts（验收：报出编造数字）
+ * 三处必须同源。曾经验收侧自己写了一套「先剥日期再抽数字」的规则，
+ * 于是「审计通过」并不等于「引擎真的这么判」—— 判据分叉是审计最贵的坑。
+ *
+ * 返回原文里**每一个**未在事实池出现过的数字片段（保留重复，便于逐处擦除）。
+ */
+export function unsupportedNumbersIn(text: string, truth: ActivityTruth): string[] {
+  const allowed = allowedFactTokens(truth);
+  const out: string[] = [];
+  for (const n of String(text ?? '').match(/\d+(\.\d+)?/g) ?? []) {
+    if (!Array.from(allowed).some((t) => t.includes(n))) out.push(n);
+  }
+  return out;
+}
+
+/**
  * Step 11：Claim → Fact。
  * 两类问题必须拦下：
  *  1. 文案里出现事实池之外的数字（编造价钱/里程/天数/人数）
@@ -76,7 +97,6 @@ export function groundClaims(
   blocks: ContentBlock[],
   truth: ActivityTruth
 ): { blocks: ContentBlock[]; violations: GroundingViolation[] } {
-  const allowed = allowedFactTokens(truth);
   const violations: GroundingViolation[] = [];
 
   const cleaned = blocks.map((b) => {
@@ -92,15 +112,11 @@ export function groundClaims(
       }
     }
 
-    const nums = `${headline} ${body}`.match(/\d+(\.\d+)?/g) ?? [];
-    for (const n of nums) {
-      const unitOk = Array.from(allowed).some((t) => t.includes(n));
-      if (!unitOk) {
-        violations.push({ blockId: b.id, reason: 'unsupported_number', detail: n });
-        const re = new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
-        body = body.replace(re, '');
-        headline = headline.replace(re, '');
-      }
+    for (const n of unsupportedNumbersIn(`${headline} ${body}`, truth)) {
+      violations.push({ blockId: b.id, reason: 'unsupported_number', detail: n });
+      const re = new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+      body = body.replace(re, '');
+      headline = headline.replace(re, '');
     }
 
     return {
