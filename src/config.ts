@@ -22,6 +22,14 @@ export const config = {
   /** 未支付订单自动关闭时间（分钟） */
   orderExpireMinutes: Number(process.env.ORDER_EXPIRE_MINUTES ?? 30),
 
+  /**
+   * CORS 允许的前端来源（逗号分隔）。
+   * 默认 `*` = 反射请求方 Origin（鉴权走 Authorization 头、不用 Cookie，无 CSRF 风险）。
+   * 前端部署在 GitHub Pages（kumaoikawa-debug.github.io）与本地 dev server 时都必须放行，
+   * 因此默认放开；若将来绑自有域名想收紧，设 `CORS_ORIGINS=https://a.com,https://b.com`。
+   */
+  corsOrigins: process.env.CORS_ORIGINS ?? '*',
+
   wechat: {
     mchId: process.env.WECHAT_MCH_ID ?? '',
     appId: process.env.WECHAT_APPID ?? '',

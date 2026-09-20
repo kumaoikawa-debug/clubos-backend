@@ -3,11 +3,15 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import routes from './routes';
 import contentRouter from './routes/content';
+import { cors } from './middleware';
 import { config } from './config';
 import { prisma, logger, fail } from './lib';
 import { startScheduler } from './scheduler';
 
 const app = express();
+
+// CORS 必须最先挂：前端在 GitHub Pages、后端在 Render，属跨域；缺这两个头浏览器会直接抛错
+app.use(cors);
 
 // 微信回调会带原始 body，验签需要原始字节；用 verify 把 rawBody 暂存到 req 上
 app.use(

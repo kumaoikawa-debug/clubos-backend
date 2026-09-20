@@ -63,6 +63,45 @@ export function verifyWechatNotify(req: RawReq, res: Response, next: NextFunctio
 }
 
 /**
+ * CORS —— 前后端分离部署（前端 GitHub Pages + 后端 Render）**必须**开启。
+ *
+ * ★为什么是硬需求：浏览器跨域发 `POST + Content-Type: application/json` 之前会先发
+ *   `OPTIONS` 预检，并要求预检响应带 `Access-Control-Allow-Origin`；真实响应也必须带该头，
+ *   否则浏览器会**直接丢弃响应并让 fetch 抛错**（JS 里只看到 "Failed to fetch"，看不到 4xx/5xx）。
+ *   典型误判：服务端 curl 全绿（curl 不受同源策略约束），网页上「测试后端连接」却永远失败。
+ * ★安全性：本服务鉴权走 `Authorization: Bearer <jwt>`（不是 Cookie），放行来源不存在 CSRF 风险。
+ *   默认反射请求方 Origin；若将来绑自有域名想收紧，设 env `CORS_ORIGINS=https://a.com,https://b.com`。
+ * ★必须挂在所有路由**之前**（含鉴权中间件），且 OPTIONS 要提前 204 返回。
+ */
+export function cors(req: Request, res: Response, next: NextFunction): void {
+  const origin = req.header('origin');
+  const allow = config.corsOrigins.trim();
+
+  if (allow === '*' || !allow) {
+    res.setHeader('Access-Control-Allow-Origin', origin || '*');
+  } else {
+    const list = allow.split(',').map((s) => s.trim()).filter(Boolean);
+    if (origin && list.includes(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
+    else if (!origin && list.length) res.setHeader('Access-Control-Allow-Origin', list[0]);
+  }
+
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  // 回显预检请求声明的头，避免前端加自定义头时被拦
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    req.header('access-control-request-headers') || 'Content-Type,Authorization'
+  );
+  res.setHeader('Access-Control-Max-Age', '86400');
+
+  if (req.method === 'OPTIONS') {
+    res.status(204).end();
+    return;
+  }
+  next();
+}
+
+/**
  * 管理端鉴权：校验 Authorization: Bearer <jwt>，解析出 merchantId / role，挂到 req.admin。
  * 路由据此做数据归属校验，防止越权操作别人的订单 / 会员数据。
  */
