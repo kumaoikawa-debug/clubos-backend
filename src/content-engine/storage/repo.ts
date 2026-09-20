@@ -104,6 +104,21 @@ export async function getLatestDocument(
 ) {
   const where: Record<string, unknown> = { merchantId: toBigInt(merchantId), scenario };
   const aid = toBigIntOrNull(activityId);
-  if (aid !== null) where.activityId = aid;
+  if (aid !== null) {
+    where.activityId = aid;
+  } else if (activityId !== null && activityId !== undefined && String(activityId) !== '') {
+    /**
+     * ★ 非数字 activityId（草稿期 'a-123' / 'smoke-v3-1' 等）写不进 BigInt 列，
+     *   DB.activityId 恒为 NULL。此时**绝不能丢掉过滤条件**——否则
+     *   ① 查 A 活动会返回 B 活动的内容；② 连不存在的 id 也会返回最新一篇（线上实测）。
+     *   改为按入库 JSON 内保留的原始 activityId 精确匹配（truth / document 两处任一命中），
+     *   新旧数据都覆盖，且无需改表结构。
+     */
+    const key = String(activityId);
+    where.OR = [
+      { truthSnapshot: { path: ['activityId'], equals: key } },
+      { document: { path: ['activityId'], equals: key } },
+    ];
+  }
   return prisma.contentDocument.findFirst({ where, orderBy: { createdAt: 'desc' } });
 }
