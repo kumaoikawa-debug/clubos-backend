@@ -3,6 +3,9 @@
 
 generator client {
   provider = "prisma-client-js"
+  // 显式声明引擎目标，避免运行时靠探测（Alpine 缺 openssl 时探测会退回 1.1.x 引擎导致加载失败）
+  // debian-openssl-3.0.x 对应 Dockerfile 的 node:22-slim(Debian bookworm)；本机 macOS 走 native
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
 }
 
 datasource db {
