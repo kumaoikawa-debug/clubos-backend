@@ -186,7 +186,7 @@ export async function generateRecap(
   const merchantId = input.merchantId;
 
   const photos = normalizePhotos(input.photos);
-  const understanding: SourceUnderstanding = await understandSources(input.sourceMaterials, input.activity, c);
+  const understanding: SourceUnderstanding = await understandSources(merchantId, input.sourceMaterials, input.activity, c);
   const baseMaster = buildActivityMaster({
     activityId: input.activityId,
     activity: input.activity,

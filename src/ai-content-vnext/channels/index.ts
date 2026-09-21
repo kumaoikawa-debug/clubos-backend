@@ -29,7 +29,7 @@ export async function generateChannel(input: GenerateChannelInput, chat: ChatFn 
 
   // 共享母体：理解源材料 → Activity Master
   const photos = normalizePhotos(input.photos);
-  const understanding = await understandSources(input.sourceMaterials, input.activity, c);
+  const understanding = await understandSources(merchantId, input.sourceMaterials, input.activity, c);
   const master = buildActivityMaster({
     activityId: input.activityId,
     activity: input.activity,

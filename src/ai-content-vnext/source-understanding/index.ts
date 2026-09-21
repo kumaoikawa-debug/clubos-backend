@@ -26,6 +26,7 @@ D. conflicts：只有资料之间真正互相矛盾时才记录；field 用字�
 最高原则：允许创造表达，不允许创造事实。资料里没有的，不要写进任何一类。`;
 
 export async function understandSources(
+  merchantId: string,
   sourceMaterials: SourceMaterial[] | undefined,
   activity: Record<string, unknown> | undefined,
   chat: ChatFn
@@ -57,7 +58,9 @@ ${safeStringifyActivity(activity)}
   "conflicts": [ { "field": "字段名", "values": ["值1","值2"], "reason": "source_conflict", "blocking": true } ]
 }`;
 
-  const r = await chat(activity?.merchantId ? String(activity.merchantId) : '0', prompt, {
+  // ★ merchantId 必须由编排器显式传入（req.admin.sub），绝不从 activity 记录里猜——
+  //   前端 activity 不带 merchantId，曾兜底成 '0' → getAccount(0) 开户 → 外键约束 500（线上事故 v236 修）。
+  const r = await chat(String(merchantId), prompt, {
     system: SYSTEM,
     temperature: 0.2,
     response_format: { type: 'json_object' },

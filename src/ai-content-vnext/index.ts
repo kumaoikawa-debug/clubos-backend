@@ -53,7 +53,7 @@ export async function generatePromoCanvas(
   const merchantId = input.merchantId;
 
   const photos = normalizePhotos(input.photos);
-  const understanding = await understandSources(input.sourceMaterials, input.activity, c);
+  const understanding = await understandSources(merchantId, input.sourceMaterials, input.activity, c);
   const master = buildActivityMaster({
     activityId: input.activityId,
     activity: input.activity,
@@ -115,7 +115,7 @@ export async function revisePromo(
   const { fn: c, meter } = metered(chat);
   const merchantId = input.merchantId;
   const photos = normalizePhotos(input.photos);
-  const understanding = await understandSources(input.sourceMaterials, input.activity, c);
+  const understanding = await understandSources(merchantId, input.sourceMaterials, input.activity, c);
   const master = buildActivityMaster({
     activityId: input.activityId,
     activity: input.activity,
