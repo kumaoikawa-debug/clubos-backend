@@ -1,5 +1,12 @@
 /**
- * Content Engine V3 —— 对外接口（文档 §十八）
+ * [LEGACY] Content Engine V3 —— 对外接口（文档 §十八）
+ *
+ * ⚠️ 自 Clean Rewrite（文档 V1.0 §4）起，本路由被标记为 legacy：
+ *    - 已打 Git tag `clubos-ai-content-legacy` 作为可回滚冻结点；
+ *    - 旧 AI 内容生成主链（固定 Family / Variant / Style / 固定章节 / 固定页面结构）
+ *      停止迭代，不再参与「新生成」；
+ *    - 活动详情 AI Promo Canvas 的新生成统一走 `/api/content-vnext`（src/ai-content-vnext）。
+ *    本文件仅保留以兼容既有已落库内容读取，请勿在此新增生成能力。
  *
  * POST /api/content/detail/generate     生成活动详情 PromoDocument
  * GET  /api/content/activity/:activityId 取该活动最新 V3 文档

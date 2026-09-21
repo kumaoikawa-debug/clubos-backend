@@ -3,6 +3,7 @@ import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import routes from './routes';
 import contentRouter from './routes/content';
+import contentVnextRouter from './routes/contentVnext';
 import { cors } from './middleware';
 import { config } from './config';
 import { prisma, logger, fail } from './lib';
@@ -33,6 +34,9 @@ app.use('/api/pay', routes);
 
 // Content Engine V3：活动详情页 / 宣发 / 回顾的内容生成（自带 requireAdmin 鉴权）
 app.use('/api/content', contentRouter);
+
+// [Clean Rewrite] ai-content-vnext：活动详情 AI Promo Canvas 新引擎（自带 requireAdmin 鉴权）
+app.use('/api/content-vnext', contentVnextRouter);
 
 // 404
 app.use((_req, res) => {
