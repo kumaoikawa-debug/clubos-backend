@@ -155,3 +155,52 @@ export function checkFacts(
     materialEvidenceFlags,
   };
 }
+
+/**
+ * 对一段自由文本（如渠道标题 / 摘要 / Hook / 标签）做事实安全扫描。
+ * 渠道产出很多是自由文本而非 12 型 Block，checkFacts 只扫 block，这里补扫。
+ * 复用 §19 禁止词 + 价格 / 日期越界逻辑。
+ */
+export function scanFreeText(text: string, master: ActivityMaster): GroundingIssue[] {
+  if (!text) return [];
+  const sourceText = collectSourceText(master).toLowerCase();
+  const knownPrice = extractPrice(JSON.stringify(master.publicFacts) + JSON.stringify(master.fees));
+  const issues: GroundingIssue[] = [];
+  const low = text.toLowerCase();
+
+  for (const f of FORBIDDEN) {
+    if (low.includes(f.word) && !sourceText.includes(f.word.toLowerCase())) {
+      issues.push({
+        blockIndex: -1,
+        field: f.field,
+        snippet: text.length > 60 ? text.slice(0, 60) + '…' : text,
+        reason: `文案出现「${f.word}」但资料未支持，疑似编造（§19）`,
+        severity: 'block',
+      });
+    }
+  }
+
+  const price = extractPrice(text);
+  if (price && knownPrice && price !== knownPrice) {
+    issues.push({
+      blockIndex: -1,
+      field: 'price',
+      snippet: text.length > 60 ? text.slice(0, 60) + '…' : text,
+      reason: `文案价格 ${price} 与母体已知价格 ${knownPrice} 不一致`,
+      severity: 'block',
+    });
+  }
+
+  const date = extractDate(text);
+  if (date && !sourceText.includes(date.toLowerCase()) && !sourceText.includes(date.replace(/[.\/-]/g, ''))) {
+    issues.push({
+      blockIndex: -1,
+      field: 'time',
+      snippet: text.length > 60 ? text.slice(0, 60) + '…' : text,
+      reason: `文案出现日期 ${date} 但资料未提及`,
+      severity: 'warn',
+    });
+  }
+
+  return issues;
+}

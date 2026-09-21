@@ -22,7 +22,8 @@ import { planEditorial } from './editorial';
 import { generateBlocks } from './generation';
 import { checkFacts } from './grounding';
 import { normalizePhotos } from './media';
-import type { GeneratePromoInput, PromoCanvasResult } from './types';
+import { selectDirection, recordAndMeasure } from './diversity';
+import type { GeneratePromoInput, PromoCanvasResult, DiversityMeta } from './types';
 
 interface Meter {
   credits: number;
@@ -59,15 +60,41 @@ export async function generatePromoCanvas(
     understanding,
     photos,
   });
-  const plan = await planEditorial(merchantId, master, understanding, c);
+  // §29 反重复闸门：生成前自动挑一个与最近内容不同的宣传切口
+  const useDiversity = input.diversity !== false;
+  const direction = useDiversity ? selectDirection(merchantId) : null;
+
+  const plan = await planEditorial(
+    merchantId,
+    master,
+    understanding,
+    c,
+    undefined,
+    direction ? direction.hint : undefined
+  );
   const { blocks } = await generateBlocks(merchantId, master, understanding, plan, c);
   const grounding = checkFacts(blocks, master, understanding);
+
+  // 生成后写入 Creative Memory 并度量反重复
+  const diversity: DiversityMeta | null = useDiversity
+    ? {
+        direction,
+        repetition: recordAndMeasure(merchantId, {
+          activityId: input.activityId,
+          channel: 'promo',
+          direction,
+          thesis: plan.coreSellingIdea,
+          blocks,
+        }),
+      }
+    : null;
 
   return {
     activityMaster: master,
     editorialPlan: plan,
     blocks,
     grounding,
+    diversity: diversity || undefined,
     usage: { credits: meter.credits, tokens: meter.tokens, balance: meter.balance, source: meter.source },
   };
 }
@@ -95,15 +122,39 @@ export async function revisePromo(
     understanding,
     photos,
   });
-  const plan = await planEditorial(merchantId, master, understanding, c);
+  const useDiversity = input.diversity !== false;
+  const direction = useDiversity ? selectDirection(merchantId) : null;
+
+  const plan = await planEditorial(
+    merchantId,
+    master,
+    understanding,
+    c,
+    undefined,
+    direction ? direction.hint : undefined
+  );
   const { blocks } = await generateBlocks(merchantId, master, understanding, plan, c, input.instruction);
   const grounding = checkFacts(blocks, master, understanding);
+
+  const diversity: DiversityMeta | null = useDiversity
+    ? {
+        direction,
+        repetition: recordAndMeasure(merchantId, {
+          activityId: input.activityId,
+          channel: 'promo',
+          direction,
+          thesis: plan.coreSellingIdea,
+          blocks,
+        }),
+      }
+    : null;
 
   return {
     activityMaster: master,
     editorialPlan: plan,
     blocks,
     grounding,
+    diversity: diversity || undefined,
     usage: { credits: meter.credits, tokens: meter.tokens, balance: meter.balance, source: meter.source },
   };
 }
@@ -117,3 +168,13 @@ export { checkFacts } from './grounding';
 export { normalizePhotos, classifyEvidence } from './media';
 export { defaultChat } from './chat';
 export type { ChatFn } from './chat';
+export { generateChannel } from './channels';
+export type { ChannelResult, ChannelType, GenerateChannelInput } from './types';
+export { generateRecap, buildRecapMaster } from './recap';
+export type { RecapResult, RecapInput, GenerateRecapInput, RecapPlan } from './types';
+/* §29 增强能力（第四阶段） */
+export { selectDirection, recordAndMeasure, measureOnly } from './diversity';
+export { DIRECTIONS, pickDirection } from './directions';
+export { recordCreativeMemory, recentCreativeMemory, clearCreativeMemory } from './creative-memory';
+export { semanticSimilarity } from './similarity/semantic';
+export { layoutSimilarity } from './similarity/layout';

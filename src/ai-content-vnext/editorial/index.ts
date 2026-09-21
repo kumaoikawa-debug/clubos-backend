@@ -27,6 +27,12 @@ const SYSTEM = `你是 ClubOS 的「活动内容主编」。你不直接套模�
 
 editorialPlan 长度由你根据活动自行决定，可 3 段也可 8 段以上。`;
 
+/** 渠道角度指令：让同一 Activity Master 在不同渠道重新策划，绝不复制详情页 / 互不复制 */
+const CHANNEL_DIRECTIVE: Partial<Record<string, string>> = {
+  wechat: `本次宣发角度是【微信公众号长文】。请为公众号读者重新策划：标题如何吸睛但不标题党、摘要怎么写、首屏用什么图与一句话钩子、长文节奏如何铺陈（可叙事 / 可干货 / 可情绪）、图片顺序怎么排、结尾 CTA 如何引导报名。不要复制活动详情页结构——公众号读者要的是「为什么这篇值得读」。`,
+  xiaohongshu: `本次宣发角度是【小红书笔记】。请为小红书用户重新策划：标题要有关键词 + 情绪 + 干货感、开头 Hook 前两行必须抓住眼球、正文口语化有干货可分段、图片顺序怎么排（首图决定点击）、结尾 CTA 自然。绝不写成公众号缩短版——小红书用户要的是「对我有什么用 / 值不值得去」。`,
+};
+
 function buildMasterContext(master: ActivityMaster, understanding: SourceUnderstanding): string {
   const rawTexts = (understanding.sourceMaterials || [])
     .map((m, i) => `【原始资料 ${i + 1}｜${m.type}】\n${m.text || '(无文本)'}`)
@@ -58,9 +64,14 @@ export async function planEditorial(
   merchantId: string,
   master: ActivityMaster,
   understanding: SourceUnderstanding,
-  chat: ChatFn
+  chat: ChatFn,
+  channel?: 'wechat' | 'xiaohongshu',
+  directionHint?: string
 ): Promise<EditorialPlan> {
   const ctx = buildMasterContext(master, understanding);
+  let system = channel ? SYSTEM + '\n\n' + (CHANNEL_DIRECTIVE[channel] || '') : SYSTEM;
+  // §29 宣传切口：由 Creative Memory 自动挑选（与最近内容不同的角度）
+  if (directionHint) system += '\n\n本次建议的宣传切口：' + directionHint;
   const prompt = `${ctx}
 
 ==== 任务 ====
@@ -86,10 +97,10 @@ export async function planEditorial(
 }`;
 
   const r = await chat(merchantId, prompt, {
-    system: SYSTEM,
+    system,
     temperature: 0.7,
     response_format: { type: 'json_object' },
-    note: 'AI Engine·Editorial Plan',
+    note: channel ? `AI Engine·Editorial Plan(${channel})` : 'AI Engine·Editorial Plan',
   });
 
   const parsed = extractJson<EditorialPlan>(r.content);

@@ -14,7 +14,7 @@ import type { Response } from 'express';
 import { z } from 'zod';
 import { ok, fail, zodMessage } from '../lib';
 import { requireAdmin } from '../middleware';
-import { generatePromoCanvas, revisePromo } from '../ai-content-vnext';
+import { generatePromoCanvas, revisePromo, generateChannel, generateRecap } from '../ai-content-vnext';
 
 const router = Router();
 router.use(requireAdmin);
@@ -48,6 +48,23 @@ const GenerateSchema = z.object({
 const ReviseSchema = GenerateSchema.extend({
   instruction: z.string().min(1, 'instruction 必填'),
   existingBlocks: z.array(z.any()).optional(),
+});
+
+const ChannelSchema = GenerateSchema.extend({
+  channel: z.enum(['wechat', 'xiaohongshu', 'poster', 'moments'], {
+    errorMap: () => ({ message: 'channel 必须是 wechat / xiaohongshu / poster / moments' }),
+  }),
+  instruction: z.string().optional(),
+});
+
+const RecapSchema = GenerateSchema.extend({
+  recap: z.object({
+    actualActivityData: z.record(z.any()),
+    photos: z.array(PhotoSchema).max(60).optional(),
+    leaderNotes: z.array(z.string().max(2000)).max(20).optional(),
+    feedback: z.array(z.string().max(2000)).max(40).optional(),
+  }),
+  instruction: z.string().optional(),
 });
 
 router.post('/generate', async (req, res: Response) => {
@@ -99,6 +116,60 @@ router.post('/revise', async (req, res: Response) => {
     res.json(ok(result));
   } catch (e) {
     res.status(500).json(fail('自然语言改稿失败：' + (e instanceof Error ? e.message : String(e))));
+  }
+});
+
+router.post('/channel', async (req, res: Response) => {
+  const merchantId = Number(req.admin?.sub);
+  if (!merchantId) {
+    res.status(401).json(fail('未登录'));
+    return;
+  }
+  const parsed = ChannelSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(zodMessage(parsed.error)));
+    return;
+  }
+  try {
+    const result = await generateChannel({
+      merchantId: String(merchantId),
+      activityId: parsed.data.activityId,
+      activity: parsed.data.activity as Record<string, unknown> | undefined,
+      sourceMaterials: parsed.data.sourceMaterials,
+      photos: parsed.data.photos as any,
+      channel: parsed.data.channel,
+      instruction: parsed.data.instruction,
+    });
+    res.json(ok(result));
+  } catch (e) {
+    res.status(500).json(fail('宣发渠道生成失败：' + (e instanceof Error ? e.message : String(e))));
+  }
+});
+
+router.post('/recap', async (req, res: Response) => {
+  const merchantId = Number(req.admin?.sub);
+  if (!merchantId) {
+    res.status(401).json(fail('未登录'));
+    return;
+  }
+  const parsed = RecapSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json(fail(zodMessage(parsed.error)));
+    return;
+  }
+  try {
+    const result = await generateRecap({
+      merchantId: String(merchantId),
+      activityId: parsed.data.activityId,
+      activity: parsed.data.activity as Record<string, unknown> | undefined,
+      sourceMaterials: parsed.data.sourceMaterials,
+      photos: parsed.data.photos as any,
+      recap: parsed.data.recap as any,
+      instruction: parsed.data.instruction,
+    });
+    res.json(ok(result));
+  } catch (e) {
+    res.status(500).json(fail('活动回顾生成失败：' + (e instanceof Error ? e.message : String(e))));
   }
 });
 

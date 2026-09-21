@@ -191,12 +191,22 @@ export interface GroundingReport {
   materialEvidenceFlags: MaterialEvidenceFlag[];
 }
 
+/** §29 反重复闸门元数据（第四阶段增强能力） */
+export interface DiversityMeta {
+  /** 本次自动选择的宣传切口；diversity=false 时为 null */
+  direction: { key: string; label: string; hint: string } | null;
+  /** 与最近内容的反重复度量；diversity=false 时为 null */
+  repetition: { semantic: number; layout: number; repetitive: boolean } | null;
+}
+
 /** 编排器最终产出 */
 export interface PromoCanvasResult {
   activityMaster: ActivityMaster;
   editorialPlan: EditorialPlan;
   blocks: PromoBlock[];
   grounding: GroundingReport;
+  /** §29 宣传切口 + 反重复度量 */
+  diversity?: DiversityMeta;
   /** 调用计量（来自 proxyChat） */
   usage?: { credits: number; tokens: number; balance: number; source: string };
 }
@@ -211,8 +221,143 @@ export interface GeneratePromoInput {
   sourceMaterials?: SourceMaterial[];
   /** 已上传图片（含 orientation / materialEvidence 等元数据） */
   photos?: MediaRef[];
-  /** 自然语言改稿指令（revise 时使用） */
+  /** 自然语言改稿指令（revise 使用时） */
   instruction?: string;
   /** 既有 blocks（revise 时携带，用于约束「不要推翻已有正确事实」 */
   existingBlocks?: PromoBlock[];
+  /** §29 反重复闸门开关（默认开启；显式 false 关闭） */
+  diversity?: boolean;
+}
+
+/**
+ * 宣发渠道（§17 / §27 第二阶段）
+ *
+ * 所有渠道共享同一个 Activity Master（数据母体），但各自重新策划，绝不复制详情页 / 互相复制：
+ *   - wechat      微信公众号长文（输出可直接粘贴公众号后台的 HTML）
+ *   - xiaohongshu 小红书笔记（独立内容策略，非公众号缩短版）
+ *   - poster      海报内容结构（从 Activity Master 自动提取，确定性、不依赖 LLM）
+ *   - moments     朋友圈 / 微信群轻量输出（从同一 Activity Understanding 派生）
+ */
+export type ChannelType = 'wechat' | 'xiaohongshu' | 'poster' | 'moments';
+
+/** 微信公众号长文产出（输出 html 可直接粘贴公众号后台） */
+export interface WechatContent {
+  title: string;
+  summary: string;
+  heroHeadline: string;
+  ctaText: string;
+  ctaAction: string;
+  /** 与详情页同套 12 型 Block，但按公众号节奏重排 */
+  blocks: PromoBlock[];
+  /** 可直接复制进微信公众号后台的 HTML 片段（内联样式） */
+  html: string;
+}
+
+/** 小红书笔记产出（结构化字段，前端渲染为笔记卡片） */
+export interface XiaohongshuContent {
+  title: string;
+  hook: string;
+  body: string;
+  tags: string[];
+  ctaText: string;
+  /** 首图图注 / 文案 */
+  coverCaption: string;
+  /** 图片顺序（引用 master.photos 的 id） */
+  imageOrder: string[];
+  /** 底层 Block（供前端复用 12 型渲染与图片解析） */
+  blocks: PromoBlock[];
+}
+
+/** 海报内容结构（确定性提取，不依赖 LLM） */
+export interface PosterContent {
+  name: string;
+  date: string;
+  location: string;
+  priceText: string;
+  participation: string;
+  /** 一句话卖点 */
+  sellingPoint: string;
+  /** 2~3 个核心亮点 */
+  highlights: string[];
+  signup: string;
+}
+
+/** 朋友圈 / 微信群轻量输出（确定性派生） */
+export interface MomentsContent {
+  text: string;
+  signup: string;
+}
+
+export type ChannelContent = WechatContent | XiaohongshuContent | PosterContent | MomentsContent;
+
+/** 渠道生成最终产出 */
+export interface ChannelResult {
+  channel: ChannelType;
+  activityMaster: ActivityMaster;
+  grounding: GroundingReport;
+  content: ChannelContent;
+  /** §29 宣传切口 + 反重复度量 */
+  diversity?: DiversityMeta;
+  usage?: { credits: number; tokens: number; balance: number; source: string };
+}
+
+/** 渠道生成输入 */
+export interface GenerateChannelInput {
+  merchantId: string;
+  activityId: string;
+  activity?: Record<string, unknown>;
+  sourceMaterials?: SourceMaterial[];
+  photos?: MediaRef[];
+  channel: ChannelType;
+  /** 自然语言微调指令（可选） */
+  instruction?: string;
+  /** §29 反重复闸门开关（默认开启；显式 false 关闭） */
+  diversity?: boolean;
+}
+
+/**
+ * 活动回顾（§18 / §28 第三阶段）
+ *
+ * 输入 = Activity Master + actualActivityData + 现场照片 + 领队少量备注 + 真实用户反馈。
+ * AI 重新判断「这一次真正值得记录的是什么」，围绕真实现场重新策划；
+ * 固定 skeleton（集合→出发→途中→合影→感谢→下一期）被禁止。
+ */
+export interface RecapInput {
+  /** 真实活动数据（实际发生的时间/人数/行程/天气等，必须是真实的，不可编造） */
+  actualActivityData: Record<string, unknown>;
+  /** 现场照片（本次拍摄，eventFact 语境） */
+  photos?: MediaRef[];
+  /** 领队少量备注 */
+  leaderNotes?: string[];
+  /** 真实用户反馈 */
+  feedback?: string[];
+}
+
+export interface RecapPlan extends EditorialPlan {
+  /** 这一次真正值得记录的是什么（AI 重新判断的结论） */
+  worthRecording: string;
+}
+
+export interface RecapResult {
+  activityId: string;
+  activityMaster: ActivityMaster;
+  /** 这次真正值得记录的是什么 */
+  worthRecording: string;
+  blocks: PromoBlock[];
+  grounding: GroundingReport;
+  /** §29 宣传切口 + 反重复度量 */
+  diversity?: DiversityMeta;
+  usage?: { credits: number; tokens: number; balance: number; source: string };
+}
+
+export interface GenerateRecapInput {
+  merchantId: string;
+  activityId: string;
+  activity?: Record<string, unknown>;
+  sourceMaterials?: SourceMaterial[];
+  photos?: MediaRef[];
+  recap: RecapInput;
+  instruction?: string;
+  /** §29 反重复闸门开关（默认开启；显式 false 关闭） */
+  diversity?: boolean;
 }
