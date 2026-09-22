@@ -21,7 +21,8 @@ router.use(requireAdmin);
 
 const PhotoSchema = z.object({
   id: z.string().min(1),
-  src: z.string().min(1),
+  // 后端是文本模型，不消费图片字节；前端只传 id/图注/证据属性，dataURL 由前端本地渲染兜底
+  src: z.string().optional(),
   width: z.number().optional(),
   height: z.number().optional(),
   caption: z.string().optional(),

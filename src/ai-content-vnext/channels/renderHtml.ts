@@ -27,13 +27,12 @@ function renderImages(master: ActivityMaster, refs?: string[], single = false): 
   if (!refs || !refs.length) return '';
   const imgs = refs
     .map((id) => {
+      // 后端是文本模型，不持有图片字节：即便没有 src 也保留 data-media-id，
+      // 前端预览时按 id 用本地原图补回（复制进公众号后台时用户自行传图）。
       const src = photoSrc(master, id);
-      if (!src) return '';
-      return `<img src="${esc(src)}" style="width:100%;display:block;margin:0 auto 4px;"/>`;
+      return `<img data-media-id="${esc(id)}" src="${esc(src)}" style="width:100%;display:block;margin:0 auto 4px;"/>`;
     })
-    .filter(Boolean)
     .join('');
-  if (!imgs) return '';
   const wrap = single ? '' : 'display:flex;flex-wrap:wrap;gap:4px;';
   const child = single ? '' : 'width:calc(50% - 2px);';
   return `<section style="${wrap}">${imgs.replace(/width:100%/g, `width:100%;${child}`)}</section>`;

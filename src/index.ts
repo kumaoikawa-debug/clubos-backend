@@ -15,9 +15,11 @@ const app = express();
 app.use(cors);
 
 // 微信回调会带原始 body，验签需要原始字节；用 verify 把 rawBody 暂存到 req 上
+// 限制放宽到 5mb：前端已不再发送 dataURL 照片（本地渲染兜底），正常请求远小于此；
+// 仍超限时由下方全局处理器返回 413 诊断，而不是被吞成「服务器内部错误」。
 app.use(
   express.json({
-    limit: '1mb',
+    limit: '5mb',
     verify: (req, _res, buf) => {
       (req as Request & { rawBody?: Buffer }).rawBody = buf;
     },
@@ -46,6 +48,14 @@ app.use((_req, res) => {
 // 统一错误处理
 app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
   logger.error('[unhandled]', err);
+  // 请求体超限：给出可诊断信息，而不是被吞成「服务器内部错误」（曾导致宣发渠道直接报内部错误）
+  const e = err as Error & { type?: string; status?: number; length?: number; limit?: number };
+  if (e.type === 'entity.too.large' || e.status === 413) {
+    res.status(413).json(
+      fail('请求体过大（超过 5MB）。请不要在资料里附带超大图片，照片会自动用本地原图渲染；如仍报错，请减少单次上传文件数量。')
+    );
+    return;
+  }
   res.status(500).json(fail('服务器内部错误'));
 });
 

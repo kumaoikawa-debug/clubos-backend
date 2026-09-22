@@ -20,36 +20,51 @@ import {
   type SourceUnderstanding,
 } from '../types';
 
-const SYSTEM = `你是 ClubOS 的 Block 生成器。根据「Editorial Plan」把策划落地成结构化 Promo Block 序列。
+const SYSTEM = `你是 ClubOS 的 Block 生成器，也是一位资深户外新媒体主编。根据「Editorial Plan」把策划落地成结构化 Promo Block 序列。
 
 只允许以下 12 种 block 类型：
 hero / text / statement / metric_strip / single_image / image_pair / image_triplet / image_group / text_image / quote / divider / cta
 
+你是真去过这场活动的人，写出来的文案要有具体场景与感官细节（风、光、路、温度、喘息、海拔刻度、脚下碎石的声音），而不是空泛的「风景优美 / 值得一去 / 放松身心 / 亲近自然」。
 规则：
 - 不输出 HTML，只输出 JSON blocks 数组；
 - block 顺序由你定（不要千篇一律 hero→text→image→cta）；
 - block 数量由你定（可 4 个也可 12 个），跟着 editorialPlan 的节奏走；
-- hero 必带 headline；text/statement/quote 必带 text；metric_strip 带 metrics[{label,value}]；
-- 图片 block（single_image/image_pair/image_triplet/image_group/text_image）的 mediaRefs 只能引用资料里真实存在的图片 id；
+- hero 必带 headline（要抓人、具体；不写「欢迎参加本次活动」这种空话）；text/statement/quote 必带 text（要写具体细节，不是套话）；
+- 文案必须来自下游「原始资料全文 / publicFacts / 宣传素材」里的真实信息：把笼统的说法换成具体的事实与画面。例如把「风景很好」写成「翻过垭口，冷杉林褪去，整片草甸在夕阳下泛着金红，远处的雪脊开始泛蓝」；
+- 越具体越好，但严禁编造资料里没有的数字、天气、名额、人物行为、用户评价；
+- 图片 block（single_image/image_pair/image_triplet/image_group/text_image）的 mediaRefs 只能引用「可引用图片」里真实存在的 id；
 - 引用历史素材图（materialEvidence=true 且 eventFact=false）时，文案只能说「往期活动」/「实拍」，绝不能说「本次活动会有篝火/日照金山」之类未证实事实；
 - 严禁编造天气、云海、红叶、雪、日照金山、登顶、实际人数、用户评价、领队行为、保险保障、剩余名额、「马上满员」、「最后几个」、「大家很开心」。
 
 允许创造表达（更有画面感的措辞），不允许创造事实。`;
 
-function buildContext(master: ActivityMaster, understanding: SourceUnderstanding, plan: EditorialPlan): string {
+function buildContext(master: ActivityMaster, _understanding: SourceUnderstanding, plan: EditorialPlan): string {
   const photos = master.photos
     .map(
       (p) =>
         `${p.id}｜${p.caption || '(无图注)'}｜朝向=${p.orientation || '未知'}｜主体=${(
           p.subjects || []
-        ).join('/') || '未知'}｜${p.eventFact ? '本次活动事实' : p.materialEvidence ? '历史素材证据' : '未标注'}｜src=${p.src}`
+        ).join('/') || '未知'}｜${p.eventFact ? '本次活动事实' : p.materialEvidence ? '历史素材证据' : '未标注'}`
     )
     .join('\n');
-  return `==== publicFacts（可引用的事实）====
+  // ★ 关键：把「原始资料全文」整段喂给模型（与 editorial 步一致）。否则模型只看到 publicFacts 的薄 JSON，
+  //    写出来的文案必然空洞、套话——这正是「没有真正调动大模型」的根因。
+  const rawMaterials = (master.sourceMaterials || [])
+    .map((m, i) => `【原始资料 ${i + 1}｜${m.type}】\n${m.text || '(无文本)'}`)
+    .join('\n\n');
+  const promo = ((master.sellingEvidence || []) as Array<{ kind?: string; text?: string }>)
+    .map((x) => `- [${x.kind || '卖点'}] ${x.text || ''}`)
+    .join('\n');
+  return `==== publicFacts（可引用的事实骨架）====
 ${JSON.stringify(master.publicFacts, null, 2)}
-==== 可引用图片 ====
+==== 原始资料全文（你的「素材库」，请整体消化后用具体、有画面感的文案把它落地）====
+${rawMaterials || '(无上传资料)'}
+==== 宣传素材 / 卖点（用户强调的亮点，优先融入）====
+${promo || '(无)'}
+==== 可引用图片（只能引用下面真实存在的 id）====
 ${photos || '(无)'}
-==== Editorial Plan ====
+==== Editorial Plan（本次策划骨架，跟着它的节奏走，但允许你用更具体的表达落地）====
 ${JSON.stringify(plan, null, 2)}`;
 }
 
